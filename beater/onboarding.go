@@ -18,24 +18,37 @@
 package beater
 
 import (
+	"context"
+	"net"
 	"time"
 
-	"github.com/elastic/beats/libbeat/beat"
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/logp"
 
-	"github.com/elastic/apm-server/beater/config"
 	logs "github.com/elastic/apm-server/log"
+	"github.com/elastic/apm-server/publish"
+	"github.com/elastic/apm-server/transform"
 )
 
-func notifyListening(config *config.Config, pubFct func(beat.Event)) {
+func notifyListening(ctx context.Context, listenAddr net.Addr, reporter publish.Reporter) {
 	logp.NewLogger(logs.Onboarding).Info("Publishing onboarding document")
-	event := beat.Event{
+	reporter(ctx, publish.PendingReq{
+		Transformables: []transform.Transformable{onboardingDoc{listenAddr: listenAddr.String()}},
+		Tcontext:       &transform.Context{},
+	})
+}
+
+type onboardingDoc struct {
+	listenAddr string
+}
+
+func (o onboardingDoc) Transform(ctx context.Context, tctx *transform.Context) []beat.Event {
+	return []beat.Event{{
 		Timestamp: time.Now(),
 		Fields: common.MapStr{
 			"processor": common.MapStr{"name": "onboarding", "event": "onboarding"},
-			"observer":  common.MapStr{"listening": config.Host},
+			"observer":  common.MapStr{"listening": o.listenAddr},
 		},
-	}
-	pubFct(event)
+	}}
 }

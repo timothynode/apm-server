@@ -1,0 +1,130 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package model
+
+import (
+	"github.com/elastic/beats/v7/libbeat/common"
+)
+
+//Service bundles together information related to the monitored service and the agent used for monitoring
+type Service struct {
+	Name        string
+	Version     string
+	Environment string
+	Language    Language
+	Runtime     Runtime
+	Framework   Framework
+	Agent       Agent
+	Node        ServiceNode
+}
+
+//Language has an optional version and name
+type Language struct {
+	Name    string
+	Version string
+}
+
+//Runtime has an optional version and name
+type Runtime struct {
+	Name    string
+	Version string
+}
+
+//Framework has an optional version and name
+type Framework struct {
+	Name    string
+	Version string
+}
+
+//Agent has an optional version, name and an ephemeral id
+type Agent struct {
+	Name        string
+	Version     string
+	EphemeralID string
+}
+
+type ServiceNode struct {
+	Name string
+}
+
+//Fields transforms a service instance into a common.MapStr
+func (s *Service) Fields(containerID, hostName string) common.MapStr {
+	if s == nil {
+		return nil
+	}
+
+	var svc mapStr
+	svc.maybeSetString("name", s.Name)
+	svc.maybeSetString("version", s.Version)
+	svc.maybeSetString("environment", s.Environment)
+	if node := s.Node.fields(containerID, hostName); node != nil {
+		svc.set("node", node)
+	}
+
+	var lang mapStr
+	lang.maybeSetString("name", s.Language.Name)
+	lang.maybeSetString("version", s.Language.Version)
+	if lang != nil {
+		svc.set("language", common.MapStr(lang))
+	}
+
+	var runtime mapStr
+	runtime.maybeSetString("name", s.Runtime.Name)
+	runtime.maybeSetString("version", s.Runtime.Version)
+	if runtime != nil {
+		svc.set("runtime", common.MapStr(runtime))
+	}
+
+	var framework mapStr
+	framework.maybeSetString("name", s.Framework.Name)
+	framework.maybeSetString("version", s.Framework.Version)
+	if framework != nil {
+		svc.set("framework", common.MapStr(framework))
+	}
+
+	return common.MapStr(svc)
+}
+
+//AgentFields transforms all agent related information of a service into a common.MapStr
+func (s *Service) AgentFields() common.MapStr {
+	if s == nil {
+		return nil
+	}
+	return s.Agent.fields()
+}
+
+func (n *ServiceNode) fields(containerID, hostName string) common.MapStr {
+	if n.Name != "" {
+		return common.MapStr{"name": n.Name}
+	}
+	if containerID != "" {
+		return common.MapStr{"name": containerID}
+	}
+	if hostName != "" {
+		return common.MapStr{"name": hostName}
+	}
+	return nil
+}
+
+func (a *Agent) fields() common.MapStr {
+	var agent mapStr
+	agent.maybeSetString("name", a.Name)
+	agent.maybeSetString("version", a.Version)
+	agent.maybeSetString("ephemeral_id", a.EphemeralID)
+	return common.MapStr(agent)
+}

@@ -1,5 +1,9 @@
 [[getting-started-apm-server]]
-== Getting Started With APM Server
+== Getting started with APM Server
+
+++++
+<titleabbrev>Get started</titleabbrev>
+++++
 
 // This section was copied from the APM Overview
 // Switch to tagged regions when available
@@ -17,7 +21,7 @@ Elastic Cloud.
 
 image::images/apm-architecture-cloud.png[Install Elastic APM on cloud]
 
-https://www.elastic.co/cloud/elasticsearch-service/signup[Try out the {es} Service for free],
+{ess-trial}[Try out the {es} Service for free],
 and then begin configuring your own user settings right in the Elasticsearch Service Console.
 Any changes are automatically appended to the `apm-server.yml` configuration file for your instance.
 A full list of configuration options is available in Elastic Cloud's
@@ -353,7 +357,9 @@ If you haven't already, you can now install APM Agents in your services!
 * {apm-rum-ref-v}/intro.html[JavaScript Real User Monitoring (RUM) agent]
 
 Once you have at least one Agent sending data to APM Server,
-you can start visualizing your data in the {kibana-ref}/xpack-apm.html[Kibana APM UI].
+you can start visualizing your data in the {kibana-ref}/xpack-apm.html[APM app].
+
+If you're migrating from Jaeger, see <<jaeger>>.
 
 // Shared APM & YUM
 include::{libbeat-dir}/repositories.asciidoc[]

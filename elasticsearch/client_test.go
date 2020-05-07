@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/elastic/beats/libbeat/version"
+	"github.com/elastic/beats/v7/libbeat/version"
 )
 
 func TestClient(t *testing.T) {
@@ -54,6 +54,5 @@ func TestClient(t *testing.T) {
 		} else {
 			assert.Fail(t, "unknown version ", version.GetDefaultVersion())
 		}
-
 	})
 }

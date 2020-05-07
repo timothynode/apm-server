@@ -22,16 +22,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/elastic/beats/libbeat/monitoring"
+	"github.com/elastic/beats/v7/libbeat/monitoring"
 
 	"github.com/elastic/apm-server/beater/beatertest"
 	"github.com/elastic/apm-server/beater/request"
 )
 
 var (
-	mockMonitoringRegistry = monitoring.Default.NewRegistry("mock.monitoring", monitoring.PublishExpvar)
+	mockMonitoringRegistry = monitoring.Default.NewRegistry("mock.monitoring")
 	mockMonitoringNil      = map[request.ResultID]*monitoring.Int{}
-	mockMonitoring         = request.MonitoringMapForRegistry(mockMonitoringRegistry)
+	mockMonitoring         = request.DefaultMonitoringMapForRegistry(mockMonitoringRegistry)
 )
 
 func TestMonitoringHandler(t *testing.T) {

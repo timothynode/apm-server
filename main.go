@@ -22,11 +22,16 @@ package main
 import (
 	"os"
 
+	"github.com/elastic/apm-server/beater"
 	"github.com/elastic/apm-server/cmd"
 )
 
+var rootCmd = cmd.NewRootCommand(beater.NewCreator(beater.CreatorParams{
+	RunServer: beater.RunServer,
+}))
+
 func main() {
-	if err := cmd.RootCmd.Execute(); err != nil {
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }

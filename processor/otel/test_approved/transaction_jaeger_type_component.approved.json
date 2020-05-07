@@ -1,0 +1,41 @@
+{
+    "events": [
+        {
+            "@timestamp": "0001-01-01T00:00:00Z",
+            "agent": {
+                "name": "Jaeger",
+                "version": "unknown"
+            },
+            "host": {
+                "hostname": "host-abc",
+                "name": "host-abc"
+            },
+            "labels": {
+                "component": "amqp"
+            },
+            "processor": {
+                "event": "transaction",
+                "name": "transaction"
+            },
+            "service": {
+                "language": {
+                    "name": "unknown"
+                },
+                "name": "unknown",
+                "node": {
+                    "name": "host-abc"
+                }
+            },
+            "transaction": {
+                "duration": {
+                    "us": 0
+                },
+                "id": "",
+                "name": "",
+                "result": "Success",
+                "sampled": true,
+                "type": "amqp"
+            }
+        }
+    ]
+}

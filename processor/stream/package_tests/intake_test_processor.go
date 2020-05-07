@@ -18,20 +18,21 @@
 package package_tests
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"io"
+	"time"
 
 	"github.com/santhosh-tekuri/jsonschema"
 
 	"github.com/elastic/apm-server/decoder"
+	"github.com/elastic/apm-server/model"
 	"github.com/elastic/apm-server/processor/stream"
 	"github.com/elastic/apm-server/publish"
 	"github.com/elastic/apm-server/tests"
 	"github.com/elastic/apm-server/tests/loader"
-	"github.com/elastic/beats/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/beat"
 )
 
 type TestSetup struct {
@@ -51,8 +52,7 @@ func (v *intakeTestProcessor) getReader(path string) (*decoder.NDJSONStreamReade
 	if err != nil {
 		return nil, err
 	}
-	lr := decoder.NewLineReader(bufio.NewReaderSize(reader, lrSize), lrSize)
-	return decoder.NewNDJSONStreamReader(lr), nil
+	return decoder.NewNDJSONStreamReader(reader, lrSize), nil
 }
 
 func (v *intakeTestProcessor) readEvents(reader *decoder.NDJSONStreamReader) ([]interface{}, error) {
@@ -89,7 +89,7 @@ func (p *intakeTestProcessor) LoadPayload(path string) (interface{}, error) {
 func (p *intakeTestProcessor) Decode(data interface{}) error {
 	events := data.([]interface{})
 	for _, e := range events {
-		_, err := p.Processor.HandleRawModel(e.(map[string]interface{}))
+		err := p.Processor.HandleRawModel(e.(map[string]interface{}), &model.Batch{}, time.Now(), model.Metadata{})
 		if err != nil {
 			return err
 		}
@@ -111,7 +111,7 @@ func (p *intakeTestProcessor) Process(buf []byte) ([]beat.Event, error) {
 	for _, req := range reqs {
 		if req.Transformables != nil {
 			for _, transformable := range req.Transformables {
-				events = append(events, transformable.Transform(req.Tcontext)...)
+				events = append(events, transformable.Transform(context.Background(), req.Tcontext)...)
 			}
 		}
 	}

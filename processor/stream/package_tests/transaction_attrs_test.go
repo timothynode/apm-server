@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/model/transaction/generated/schema"
 	"github.com/elastic/apm-server/processor/stream"
 	"github.com/elastic/apm-server/tests"
@@ -28,7 +29,9 @@ import (
 
 func transactionProcSetup() *tests.ProcessorSetup {
 	return &tests.ProcessorSetup{
-		Proc:            &intakeTestProcessor{Processor: stream.Processor{MaxEventSize: lrSize}},
+		Proc: &intakeTestProcessor{
+			Processor: *stream.BackendProcessor(&config.Config{MaxEventSize: lrSize}),
+		},
 		FullPayloadPath: "../testdata/intake-v2/transactions.ndjson",
 		Schema:          schema.ModelSchema,
 		SchemaPrefix:    "transaction",
@@ -46,6 +49,8 @@ func transactionPayloadAttrsNotInFields() *tests.Set {
 		tests.Group("context"),
 		tests.Group("transaction.page"),
 		tests.Group("http.request.cookies"),
+		"transaction.message.body", "transaction.message.headers",
+		"http.response.decoded_body_size", "http.response.encoded_body_size", "http.response.transfer_size",
 	)
 }
 
@@ -82,6 +87,7 @@ func transactionPayloadAttrsNotInJsonSchema() *tests.Set {
 		tests.Group("transaction.marks"),
 		tests.Group("transaction.context.request.headers."),
 		tests.Group("transaction.context.response.headers."),
+		tests.Group("transaction.context.message.headers."),
 	)
 }
 
@@ -118,6 +124,7 @@ func transactionKeywordExceptionKeys() *tests.Set {
 		tests.Group("service"),
 		tests.Group("user"),
 		tests.Group("span"),
+		tests.Group("cloud"),
 	)
 }
 
@@ -142,9 +149,10 @@ func TestKeywordLimitationOnTransactionAttrs(t *testing.T) {
 		t,
 		transactionKeywordExceptionKeys(),
 		[]tests.FieldTemplateMapping{
-			{Template: "transaction."},
 			{Template: "parent.id", Mapping: "parent_id"},
 			{Template: "trace.id", Mapping: "trace_id"},
+			{Template: "transaction.message.", Mapping: "context.message."},
+			{Template: "transaction."},
 		},
 	)
 }

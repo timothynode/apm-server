@@ -18,23 +18,26 @@
 package transform
 
 import (
+	"context"
 	"regexp"
-	"time"
 
-	"github.com/elastic/beats/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/beat"
 
-	"github.com/elastic/apm-server/model/metadata"
 	"github.com/elastic/apm-server/sourcemap"
 )
 
 type Transformable interface {
-	Transform(*Context) []beat.Event
+	Transform(context.Context, *Context) []beat.Event
 }
 
+// Context holds event-specific transformation context.
+//
+// TODO(axw) get rid of transform.Context, since it now holds only
+// static configuration. Introduce a "Transformer" type which can
+// be configured; we would have separate Transformers for RUM and
+// non-RUM.
 type Context struct {
-	RequestTime time.Time
-	Config      Config
-	Metadata    metadata.Metadata
+	Config Config
 }
 
 type Config struct {

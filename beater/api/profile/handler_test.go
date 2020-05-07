@@ -32,6 +32,7 @@ import (
 	"testing"
 
 	"github.com/elastic/apm-server/beater/api/ratelimit"
+	"github.com/elastic/apm-server/model"
 	"github.com/elastic/apm-server/transform"
 
 	"github.com/stretchr/testify/assert"
@@ -40,9 +41,10 @@ import (
 	"github.com/elastic/apm-server/beater/beatertest"
 	"github.com/elastic/apm-server/beater/headers"
 	"github.com/elastic/apm-server/beater/request"
-	"github.com/elastic/apm-server/decoder"
 	"github.com/elastic/apm-server/publish"
 )
+
+const pprofContentType = `application/x-protobuf; messageType="perftools.profiles.Profile"`
 
 func TestHandler(t *testing.T) {
 	var rateLimit, err = ratelimit.NewStore(1, 0, 0)
@@ -127,7 +129,12 @@ func TestHandler(t *testing.T) {
 			id: request.IDResponseValidAccepted,
 			parts: []part{
 				heapProfilePart(),
-				heapProfilePart(),
+				part{
+					name: "profile",
+					// No messageType param specified, so pprof is assumed.
+					contentType: "application/x-protobuf",
+					body:        heapProfileBody(),
+				},
 				part{
 					name:        "metadata",
 					contentType: "application/json",
@@ -139,7 +146,10 @@ func TestHandler(t *testing.T) {
 			reporter: func(t *testing.T) publish.Reporter {
 				return func(ctx context.Context, req publish.PendingReq) error {
 					require.Len(t, req.Transformables, 2)
-					assert.Equal(t, "foo", *req.Tcontext.Metadata.Service.Name)
+					for _, tr := range req.Transformables {
+						profile := tr.(model.PprofProfile)
+						assert.Equal(t, "foo", profile.Metadata.Service.Name)
+					}
 					return nil
 				}
 			},
@@ -147,8 +157,19 @@ func TestHandler(t *testing.T) {
 		"ProfileInvalidContentType": {
 			id: request.IDResponseErrorsValidate,
 			parts: []part{{
-				name:        "metadata",
+				name:        "profile",
 				contentType: "text/plain",
+				body:        strings.NewReader(""),
+			}},
+			body: prettyJSON(map[string]interface{}{"accepted": 0}),
+		},
+		"ProfileInvalidMessageType": {
+			id: request.IDResponseErrorsValidate,
+			parts: []part{{
+				name: "profile",
+				// Improperly formatted "messageType" param
+				// in Content-Type from APM Agent Go v1.6.0.
+				contentType: "application/x-protobuf; messageType=”perftools.profiles.Profile",
 				body:        strings.NewReader(""),
 			}},
 			body: prettyJSON(map[string]interface{}{"accepted": 0}),
@@ -157,7 +178,7 @@ func TestHandler(t *testing.T) {
 			id: request.IDResponseErrorsDecode,
 			parts: []part{{
 				name:        "profile",
-				contentType: "application/x-protobuf",
+				contentType: pprofContentType,
 				body:        strings.NewReader("foo"),
 			}},
 			body: prettyJSON(map[string]interface{}{"accepted": 0}),
@@ -168,7 +189,7 @@ func TestHandler(t *testing.T) {
 				heapProfilePart(),
 				part{
 					name:        "profile",
-					contentType: "application/x-protobuf",
+					contentType: pprofContentType,
 					body:        strings.NewReader(strings.Repeat("*", 10*1024*1024)),
 				},
 			},
@@ -180,7 +201,7 @@ func TestHandler(t *testing.T) {
 			if tc.rateLimit != nil {
 				tc.c.RateLimiter = tc.rateLimit.ForIP(&http.Request{})
 			}
-			Handler(tc.dec, transform.Config{}, tc.reporter(t))(tc.c)
+			Handler(transform.Config{}, tc.reporter(t))(tc.c)
 
 			assert.Equal(t, string(tc.id), string(tc.c.Result.ID))
 			resultStatus := request.MapResultIDToStatus[tc.id]
@@ -203,7 +224,6 @@ type testcaseIntakeHandler struct {
 	c         *request.Context
 	w         *httptest.ResponseRecorder
 	r         *http.Request
-	dec       decoder.ReqDecoder
 	rateLimit *ratelimit.Store
 	reporter  func(t *testing.T) publish.Reporter
 	reports   int
@@ -214,9 +234,6 @@ type testcaseIntakeHandler struct {
 }
 
 func (tc *testcaseIntakeHandler) setup(t *testing.T) {
-	if tc.dec == nil {
-		tc.dec = emptyDec
-	}
 	if tc.reporter == nil {
 		tc.reporter = func(t *testing.T) publish.Reporter {
 			return beatertest.NilReporter
@@ -252,24 +269,20 @@ func (tc *testcaseIntakeHandler) setup(t *testing.T) {
 	}
 	tc.r.Header.Add("Accept", "application/json")
 	tc.w = httptest.NewRecorder()
-	tc.c = &request.Context{}
+	tc.c = request.NewContext()
 	tc.c.Reset(tc.w, tc.r)
 }
 
-func emptyDec(_ *http.Request) (map[string]interface{}, error) {
-	return map[string]interface{}{}, nil
+func heapProfilePart() part {
+	return part{name: "profile", contentType: pprofContentType, body: heapProfileBody()}
 }
 
-func heapProfilePart() part {
+func heapProfileBody() io.Reader {
 	var buf bytes.Buffer
 	if err := pprof.WriteHeapProfile(&buf); err != nil {
 		panic(err)
 	}
-	return part{
-		name:        "profile",
-		contentType: "application/x-protobuf",
-		body:        &buf,
-	}
+	return &buf
 }
 
 type part struct {

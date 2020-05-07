@@ -1,19 +1,31 @@
-FROM golang:1.13.5
+FROM golang:1.13.9
 MAINTAINER Nicolas Ruflin <ruflin@elastic.co>
 
-RUN set -x && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-         netcat python-pip virtualenv && \
-    apt-get clean
+RUN apt-get update
+RUN apt-get install -y --no-install-recommends netcat python3 python3-pip python3-venv
+RUN apt-get clean
 
-RUN pip install --upgrade setuptools
+ARG UID=1000
+RUN useradd -m -u $UID apm-server
+USER $UID
+ENV HOME=/home/apm-server
+ENV GOPATH=/go
 
-# Setup work environment
-ENV APMSERVER_PATH /go/src/github.com/elastic/apm-server
+# Install the Python venv separately from the host, as otherwise the
+# shebang paths will be incorrect in one or the other.
+ENV PYTHON_ENV /tmp/python-env
 
-RUN mkdir -p $APMSERVER_PATH/build/coverage
-WORKDIR $APMSERVER_PATH
+# Install "wheel" so binary packages can be built. We end by setting
+# the modification time of the "activate" script so it's considered
+# out-of-date with respect to requirements.txt.
+RUN python3 -m venv $PYTHON_ENV/build/ve/linux
+RUN $PYTHON_ENV/build/ve/linux/bin/pip install wheel
+RUN touch -d "Yesterday" $PYTHON_ENV/build/ve/linux/bin/activate
+
+# Download module dependencies.
+COPY go.mod $HOME
+WORKDIR $HOME
+RUN go mod download
 
 # Add healthcheck for docker/healthcheck metricset to check during testing
 HEALTHCHECK CMD exit 0

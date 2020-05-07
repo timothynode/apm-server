@@ -7,6 +7,8 @@ For a full list of changes, see the
 {apm-server-ref-v}/release-notes.html[APM Server Release Notes] or the
 {kibana-ref}/release-notes.html[Kibana Release Notes].
 
+* <<release-highlights-7.7.0>>
+* <<release-highlights-7.6.0>>
 * <<release-highlights-7.5.0>>
 * <<release-highlights-7.4.0>>
 * <<release-highlights-7.3.0>>
@@ -25,6 +27,141 @@ For a full list of changes, see the
 // tag::notable-v8-highlights[]
 
 // end::notable-v8-highlights[]
+
+[[release-highlights-7.7.0]]
+=== APM version 7.7.0
+
+// tag::notable-v77-highlights[]
+Service maps::
+
+{apm-app-ref}/service-maps.html[Service maps] are now available in the APM app.
+A service map is a real-time visual representation of the instrumented services in your application’s architecture.
+It shows you how these services are connected,
+along with high-level metrics like average transaction duration, requests per minute,
+and errors per minute, that allow you to quickly assess the status of your services.
++
+[role="screenshot"]
+image::images/7.7-service-maps-java.png[APM Service maps]
+
+Alerting::
+
+Want to receive an email when the duration of your transactions are slower than a set threshold?
+How about a slack message when your application's error rate spikes?
+Now you can!
+The APM app integrates with Kibana’s {apm-app-ref}/apm-alerts.html[alerting and actions] feature.
+It provides a set of built-in actions and APM specific threshold alerts for you to easily set up and use.
++
+[role="screenshot"]
+image::images/7.7-apm-alert.png[APM app alerts]
+
+APM Agent central configuration::
+
+{apm-app-ref}/agent-configuration.html[Central configuration] now supports even more configuration options,
+so you can fine-tune your agents without needing to redeploy.
+Open up the configuration page in the APM app for a list of all supported options.
++
+[role="screenshot"]
+image::images/7.7-apm-agent-configuration.png[APM Service maps]
+
+Custom links::
+
+Elastic’s custom links feature allows you to easily create up to 500 dynamic links based on your specific APM data.
+Custom links can be filtered to only appear in the APM app for relevant services, environments, transaction types, or transaction names.
++
+Need ideas?
+Recipes for setting up custom links for emails, GitHub issues, Jira tasks, and more are available in the {apm-app-ref}/custom-links.html[documentation].
+
+Inferred spans with async profiler::
+
+Identifying a problematic service is only half of the battle when diagnosing application slowdowns.
+The Elastic APM Java Agent provides a new way to get method-level insights into your code:
+https://www.elastic.co/guide/en/apm/agent/java/master/java-method-monitoring.html[inferred spans with async-profiler].
+This can help you diagnose slow requests due to heavy computations, inefficient algorithms,
+or similar problems not related to interactions between services.
+// end::notable-v77-highlights[]
+
+[[release-highlights-7.6.0]]
+=== APM version 7.6.0
+
+// tag::notable-v76-highlights[]
+Experimental Jaeger integration::
+
+Elastic APM now integrates with https://www.jaegertracing.io/[Jaeger], an open-source, distributed tracing system.
+This integration allows users with an existing Jaeger setup to switch from the default Jaeger backend,
+to ingesting data with Elastic's APM Server, storing data in {es}, and visualizing traces in the APM app.
+Best of all, this can be done without any instrumentation changes in your application code.
++
+See {apm-server-ref-v}/jaeger.html[Jaeger integration] for more information.
+
+Experimental API Key authentication::
+
+You can now secure the communication between APM Agents and APM Server with
+{apm-server-ref-v}/api-key.html[API keys].
+API keys are easy to create and manage, and provide finer authorization rules than secret tokens.
+
+SIEM integration::
+
+There are two, brand-new integrations with Elastic SIEM:
++
+HTTP data collected with Elastic APM is now available in the SIEM app,
+enabling you to hunt for security threats with your APM data.
++
+The SIEM Detections feature automatically searches for threats and creates signals when they are detected.
+The SIEM app ships with four prebuilt rules, specifically for the APM use case: No User Agent, POST Request Declined, Unauthorized Method, and sqlmap User Agent.
++
+See the {siem-guide}/siem-ui-overview.html[SIEM hosts UI] and {siem-guide}/prebuilt-rules.html[SIEM prebuilt rules]
+for more information on using the SIEM app.
++
+[role="screenshot"]
+image::images/siem-apm-integration.png[Chained exceptions]
+
+Chained exceptions::
+
+Sometimes, an exception can cause or be caused by another exception.
+APM Agents and the APM app now support chained exceptions,
+and you can visualize when this happens in the APM app!
++
+[role="screenshot"]
+image::images/chained-exceptions.png[Chained exceptions]
+
+Deployment annotations::
+
+The APM app now displays {apm-app-ref}/transactions.html[deployment annotations] on all transaction charts.
+This feature automatically tags new deployments, so you can easily see if your deploy has increased response times
+for an end-user, or if the memory/CPU footprint of your application has increased.
+Being able to quickly identify bad deployments enables you to rollback and fix issues without causing costly outages.
++
+Deployment annotations are automatically enabled, and appear when the `service.version` of your app changes.
++
+[role="screenshot"]
+image::images/apm-transactions-overview.png[APM Transactions overview]
+
+Index configuration::
+
+Index defaults can now be changed in Kibana.
+If you use custom index names for your APM data, this feature makes it very easy to update the indices that the APM app queries.
+Simply navigate to *APM > Settings > Indices*, and make your changes!
+Index settings in the APM app take precedence over those set in kibana.yml.
++
+[role="screenshot"]
+image::images/apm-settings-kib.png[APM Settings in Kibana]
++
+See {apm-app-ref}/apm-settings-in-kibana.html[APM Settings in Kibana] for more details.
+
+Java Agent support for Kafka and JMS::
+
+The Java Agent now supports Kafka and JMS,
+enabling you to visualize end to end traces that include the messaging service used to communicate between services.
+In addition, you can now see the time your request spent waiting in the queue.
++
+[role="screenshot"]
+image::images/java-kafka.png[Java Kafka trace sample]
++
+[role="screenshot"]
+image::images/java-metadata.png[Java metadata]
++
+See the APM Java Agent's {apm-java-ref}/supported-technologies-details.html[Supported technologies] for more information.
+// end::notable-v76-highlights[]
 
 [[release-highlights-7.5.0]]
 === APM version 7.5.0
@@ -146,7 +283,7 @@ about this configuration, see
 image::images/apm-highlight-sample-rate.png[APM sample rate configuration in Kibana]
 
 [discrete]
-==== React support for Single Page Applications 
+==== React support for Single Page Applications
 
 The 7.3 release also brings a lot of exciting changes to the Real User
 Monitoring (RUM) agent. We have furthered our support of Single Page
@@ -178,7 +315,7 @@ image::images/apm-highlight-rum-maps.png[APM sample rate configuration in Kibana
 * Added support for {apm-server-ref-v}/ilm.html[index lifecycle management (ILM)]:
 ILM enables you to automate how you want to manage your indices over time,
 by automating rollovers to a new index when the existing index reaches a specified size or age.
-* Added Geo-IP processing to the default ingest pipeline:
+* Added {ref}/geoip-processor.html[Geo-IP] processing to the default ingest pipeline:
 Pipelines are still disabled by default, but activation now includes a new Geo-IP pipeline.
 The Geo-IP pipeline takes an extracted IP address from RUM events and stores it in the `client.geo` field.
 This makes it much easier to use location data in Kibana's Visualize maps and Maps app directly:
@@ -269,7 +406,7 @@ Elastic APM now enables {apm-overview-ref-v}/distributed-tracing.html[distribute
 [float]
 ==== Bug Fixes
 Changes introduced in 6.4.0 potentially caused an empty APM Kibana UI.
-This happened in case the APM Server was using an outdated configuration file, not configured to index events into separate indices. 
+This happened in case the APM Server was using an outdated configuration file, not configured to index events into separate indices.
 To fix this, the APM Kibana UI now falls back to use `apm-*` as default indices to query.
 Users can still leverage separate indices for queries by overriding the default values described in {kibana-ref}/apm-settings-kb.html[Kibana APM settings].
 

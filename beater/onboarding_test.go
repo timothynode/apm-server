@@ -18,41 +18,31 @@
 package beater
 
 import (
-	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.elastic.co/apm"
 
-	"github.com/elastic/apm-server/beater/beatertest"
-	"github.com/elastic/apm-server/beater/config"
-	"github.com/elastic/beats/libbeat/beat"
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/common"
 )
 
-func TestNotifyUpServerDown(t *testing.T) {
-	config := config.DefaultConfig("7.0.0")
-	var saved beat.Event
-	var publisher = func(e beat.Event) { saved = e }
-
-	lis, err := net.Listen("tcp", "localhost:0")
-	assert.NoError(t, err)
-	defer lis.Close()
-	config.Host = lis.Addr().String()
-
-	server, err := newServer(config, apm.DefaultTracer, beatertest.NilReporter)
+func TestOnboarding(t *testing.T) {
+	events := make(chan beat.Event, 1)
+	beater, err := setupServer(t, nil, nil, events)
 	require.NoError(t, err)
-	go run(logp.NewLogger("onboarding_test"), server, lis, config)
+	defer beater.Stop()
 
-	notifyListening(config, publisher)
-
-	listening := saved.Fields["observer"].(common.MapStr)["listening"]
-	assert.Equal(t, config.Host, listening)
-
-	processor := saved.Fields["processor"].(common.MapStr)
-	assert.Equal(t, "onboarding", processor["name"])
-	assert.Equal(t, "onboarding", processor["event"])
-
+	select {
+	case event := <-events:
+		listening := event.Fields["observer"].(common.MapStr)["listening"]
+		assert.Equal(t, "localhost:0", beater.config.Host)
+		assert.NotEqual(t, "localhost:0", listening)
+		processor := event.Fields["processor"].(common.MapStr)
+		assert.Equal(t, "onboarding", processor["name"])
+		assert.Equal(t, "onboarding", processor["event"])
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for onboarding event")
+	}
 }

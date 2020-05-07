@@ -20,19 +20,19 @@ package profile
 import (
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
-	"strings"
 
 	pprof_profile "github.com/google/pprof/profile"
 	"github.com/pkg/errors"
 
-	"github.com/elastic/beats/libbeat/monitoring"
+	"github.com/elastic/beats/v7/libbeat/monitoring"
 
 	"github.com/elastic/apm-server/beater/headers"
 	"github.com/elastic/apm-server/beater/request"
 	"github.com/elastic/apm-server/decoder"
-	"github.com/elastic/apm-server/model/metadata"
-	"github.com/elastic/apm-server/model/profile"
+	"github.com/elastic/apm-server/model"
+	"github.com/elastic/apm-server/model/modeldecoder"
 	"github.com/elastic/apm-server/publish"
 	"github.com/elastic/apm-server/transform"
 	"github.com/elastic/apm-server/utility"
@@ -41,15 +41,17 @@ import (
 
 var (
 	// MonitoringMap holds a mapping for request.IDs to monitoring counters
-	MonitoringMap = request.MonitoringMapForRegistry(registry)
-	registry      = monitoring.Default.NewRegistry("apm-server.profile", monitoring.PublishExpvar)
+	MonitoringMap = request.DefaultMonitoringMapForRegistry(registry)
+	registry      = monitoring.Default.NewRegistry("apm-server.profile")
 )
 
 const (
-	// TODO(axw) include messageType in pprofContentType; needs fix in agent
-	pprofContentType    = "application/x-protobuf"
-	metadataContentType = "application/json"
-	requestContentType  = "multipart/form-data"
+	pprofMediaType    = "application/x-protobuf"
+	metadataMediaType = "application/json"
+	requestMediaType  = "multipart/form-data"
+
+	// value for the "messagetype" param
+	pprofMessageType = "perftools.profiles.Profile"
 
 	metadataContentLengthLimit = 10 * 1024
 	profileContentLengthLimit  = 10 * 1024 * 1024
@@ -57,7 +59,6 @@ const (
 
 // Handler returns a request.Handler for managing profile requests.
 func Handler(
-	dec decoder.ReqDecoder,
 	transformConfig transform.Config,
 	report publish.Reporter,
 ) request.Handler {
@@ -68,7 +69,7 @@ func Handler(
 				err: errors.New("only POST requests are supported"),
 			}
 		}
-		if err := validateContentType(c.Request.Header, requestContentType); err != nil {
+		if _, err := validateContentType(c.Request.Header, requestMediaType); err != nil {
 			return nil, requestError{
 				id:  request.IDResponseErrorsValidate,
 				err: err,
@@ -83,22 +84,11 @@ func Handler(
 			}
 		}
 
-		// Extract metadata from the request, such as the remote address.
-		reqMeta, err := dec(c.Request)
-		if err != nil {
-			return nil, requestError{
-				id:  request.IDResponseErrorsDecode,
-				err: errors.Wrap(err, "failed to decode request metadata"),
-			}
-		}
-
-		tctx := &transform.Context{
-			RequestTime: utility.RequestTime(c.Request.Context()),
-			Config:      transformConfig,
-		}
+		tctx := &transform.Context{Config: transformConfig}
 
 		var totalLimitRemaining int64 = profileContentLengthLimit
 		var profiles []*pprof_profile.Profile
+		var profileMetadata model.Metadata
 		mr, err := c.Request.MultipartReader()
 		if err != nil {
 			return nil, err
@@ -113,7 +103,7 @@ func Handler(
 
 			switch part.FormName() {
 			case "metadata":
-				if err := validateContentType(http.Header(part.Header), metadataContentType); err != nil {
+				if _, err := validateContentType(http.Header(part.Header), metadataMediaType); err != nil {
 					return nil, requestError{
 						id:  request.IDResponseErrorsValidate,
 						err: errors.Wrap(err, "invalid metadata"),
@@ -133,29 +123,40 @@ func Handler(
 						err: errors.Wrap(err, "failed to decode metadata JSON"),
 					}
 				}
-				for k, v := range reqMeta {
+				for k, v := range c.RequestMetadata {
 					utility.InsertInMap(raw, k, v.(map[string]interface{}))
 				}
-				if err := validation.Validate(raw, metadata.ModelSchema()); err != nil {
-					return nil, requestError{
-						id:  request.IDResponseErrorsValidate,
-						err: errors.Wrap(err, "invalid metadata"),
-					}
-				}
-				metadata, err := metadata.DecodeMetadata(raw)
+				metadata, err := modeldecoder.DecodeMetadata(raw, false)
 				if err != nil {
+					var ve *validation.Error
+					if errors.As(err, &ve) {
+						return nil, requestError{
+							id:  request.IDResponseErrorsValidate,
+							err: errors.Wrap(err, "invalid metadata"),
+						}
+					}
 					return nil, requestError{
 						id:  request.IDResponseErrorsDecode,
 						err: errors.Wrap(err, "failed to decode metadata"),
 					}
 				}
-				tctx.Metadata = *metadata
+				profileMetadata = *metadata
 
 			case "profile":
-				if err := validateContentType(http.Header(part.Header), pprofContentType); err != nil {
+				params, err := validateContentType(http.Header(part.Header), pprofMediaType)
+				if err != nil {
 					return nil, requestError{
 						id:  request.IDResponseErrorsValidate,
 						err: errors.Wrap(err, "invalid profile"),
+					}
+				}
+				if v, ok := params["messagetype"]; ok && v != pprofMessageType {
+					// If messagetype is specified, require that it matches.
+					// Otherwise we assume that it's pprof, and we'll error
+					// out below if it doesn't decode.
+					return nil, requestError{
+						id:  request.IDResponseErrorsValidate,
+						err: errors.Wrapf(err, "expected messagetype %q, got %q", pprofMessageType, v),
 					}
 				}
 				r := &decoder.LimitedReader{R: part, N: totalLimitRemaining}
@@ -179,7 +180,10 @@ func Handler(
 
 		transformables := make([]transform.Transformable, len(profiles))
 		for i, p := range profiles {
-			transformables[i] = profile.PprofProfile{Profile: p}
+			transformables[i] = model.PprofProfile{
+				Metadata: profileMetadata,
+				Profile:  p,
+			}
 		}
 
 		if err := report(c.Request.Context(), publish.PendingReq{
@@ -218,12 +222,15 @@ func Handler(
 	}
 }
 
-func validateContentType(header http.Header, contentType string) error {
-	got := header.Get(headers.ContentType)
-	if !strings.Contains(got, contentType) {
-		return fmt.Errorf("invalid content type %q, expected %q", got, contentType)
+func validateContentType(header http.Header, expectedMediatype string) (params map[string]string, err error) {
+	mediatype, params, err := mime.ParseMediaType(header.Get(headers.ContentType))
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	if mediatype != expectedMediatype {
+		return nil, fmt.Errorf("invalid content type %q, expected %q", mediatype, expectedMediatype)
+	}
+	return params, nil
 }
 
 type result struct {

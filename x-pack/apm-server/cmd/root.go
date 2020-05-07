@@ -5,14 +5,21 @@
 package cmd
 
 import (
-	"github.com/elastic/apm-server/cmd"
+	"github.com/elastic/beats/v7/libbeat/beat"
+	libbeatcmd "github.com/elastic/beats/v7/libbeat/cmd"
+	xpackcmd "github.com/elastic/beats/v7/x-pack/libbeat/cmd"
 
-	xpackcmd "github.com/elastic/beats/x-pack/libbeat/cmd"
+	"github.com/elastic/apm-server/cmd"
+	_ "github.com/elastic/apm-server/x-pack/apm-server/include" // include assets
 )
 
-// RootCmd to handle beats cli
-var RootCmd = cmd.RootCmd
-
-func init() {
-	xpackcmd.AddXPack(RootCmd, cmd.Name)
+// NewXPackRootCommand returns the Elastic licensed "apm-server" root command.
+func NewXPackRootCommand(newBeat beat.Creator) *libbeatcmd.BeatsRootCmd {
+	rootCmd := cmd.NewRootCommand(newBeat)
+	xpackcmd.AddXPack(rootCmd, rootCmd.Name())
+	if enrollCmd, _, err := rootCmd.Find([]string{"enroll"}); err == nil {
+		// error is ok => enroll has already been removed
+		rootCmd.RemoveCommand(enrollCmd)
+	}
+	return rootCmd
 }

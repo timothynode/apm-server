@@ -20,17 +20,19 @@ package root
 import (
 	"time"
 
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/monitoring"
-	"github.com/elastic/beats/libbeat/version"
+	"github.com/elastic/apm-server/beater/authorization"
+
+	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/monitoring"
+	"github.com/elastic/beats/v7/libbeat/version"
 
 	"github.com/elastic/apm-server/beater/request"
 )
 
 var (
 	// MonitoringMap holds a mapping for request.IDs to monitoring counters
-	MonitoringMap = request.MonitoringMapForRegistry(registry)
-	registry      = monitoring.Default.NewRegistry("apm-server.root", monitoring.PublishExpvar)
+	MonitoringMap = request.DefaultMonitoringMapForRegistry(registry)
+	registry      = monitoring.Default.NewRegistry("apm-server.root")
 )
 
 // Handler returns error if route does not exist,
@@ -51,7 +53,7 @@ func Handler() request.Handler {
 		}
 
 		c.Result.SetDefault(request.IDResponseValidOK)
-		authorized, err := c.Authorization.AuthorizedFor("")
+		authorized, err := c.Authorization.AuthorizedFor(c.Request.Context(), authorization.ResourceInternal)
 		if err != nil {
 			c.Result.Err = err
 		}

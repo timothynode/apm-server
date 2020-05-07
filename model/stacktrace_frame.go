@@ -18,14 +18,12 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 
-	"github.com/pkg/errors"
+	"github.com/elastic/beats/v7/libbeat/common"
 
-	"github.com/elastic/beats/libbeat/common"
-
-	"github.com/elastic/apm-server/model/metadata"
 	"github.com/elastic/apm-server/sourcemap"
 	"github.com/elastic/apm-server/transform"
 	"github.com/elastic/apm-server/utility"
@@ -37,13 +35,10 @@ const (
 	errMsgSourcemapPathMandatory   = "AbsPath mandatory for sourcemapping."
 )
 
-var (
-	errInvalidStacktraceFrameType = errors.New("invalid type for stacktrace frame")
-)
-
 type StacktraceFrame struct {
 	AbsPath      *string
-	Filename     string
+	Filename     *string
+	Classname    *string
 	Lineno       *int
 	Colno        *int
 	ContextLine  *string
@@ -56,18 +51,15 @@ type StacktraceFrame struct {
 
 	ExcludeFromGrouping bool
 
-	Sourcemap Sourcemap
-	Original  Original
-}
-
-type Sourcemap struct {
-	Updated *bool
-	Error   *string
+	SourcemapUpdated *bool
+	SourcemapError   *string
+	Original         Original
 }
 
 type Original struct {
 	AbsPath      *string
-	Filename     string
+	Filename     *string
+	Classname    *string
 	Lineno       *int
 	Colno        *int
 	Function     *string
@@ -76,34 +68,10 @@ type Original struct {
 	sourcemapCopied bool
 }
 
-func DecodeStacktraceFrame(input interface{}, err error) (*StacktraceFrame, error) {
-	if input == nil || err != nil {
-		return nil, err
-	}
-	raw, ok := input.(map[string]interface{})
-	if !ok {
-		return nil, errInvalidStacktraceFrameType
-	}
-	decoder := utility.ManualDecoder{}
-	frame := StacktraceFrame{
-		AbsPath:      decoder.StringPtr(raw, "abs_path"),
-		Filename:     decoder.String(raw, "filename"),
-		Lineno:       decoder.IntPtr(raw, "lineno"),
-		Colno:        decoder.IntPtr(raw, "colno"),
-		ContextLine:  decoder.StringPtr(raw, "context_line"),
-		Module:       decoder.StringPtr(raw, "module"),
-		Function:     decoder.StringPtr(raw, "function"),
-		LibraryFrame: decoder.BoolPtr(raw, "library_frame"),
-		Vars:         decoder.MapStr(raw, "vars"),
-		PreContext:   decoder.StringArr(raw, "pre_context"),
-		PostContext:  decoder.StringArr(raw, "post_context"),
-	}
-	return &frame, decoder.Err
-}
-
 func (s *StacktraceFrame) Transform(tctx *transform.Context) common.MapStr {
 	m := common.MapStr{}
 	utility.Set(m, "filename", s.Filename)
+	utility.Set(m, "classname", s.Classname)
 	utility.Set(m, "abs_path", s.AbsPath)
 	utility.Set(m, "module", s.Module)
 	utility.Set(m, "function", s.Function)
@@ -130,14 +98,15 @@ func (s *StacktraceFrame) Transform(tctx *transform.Context) common.MapStr {
 	utility.Set(m, "line", line)
 
 	sm := common.MapStr{}
-	utility.Set(sm, "updated", s.Sourcemap.Updated)
-	utility.Set(sm, "error", s.Sourcemap.Error)
+	utility.Set(sm, "updated", s.SourcemapUpdated)
+	utility.Set(sm, "error", s.SourcemapError)
 	utility.Set(m, "sourcemap", sm)
 
 	orig := common.MapStr{}
 	utility.Set(orig, "library_frame", s.Original.LibraryFrame)
-	if s.Sourcemap.Updated != nil && *(s.Sourcemap.Updated) {
+	if s.SourcemapUpdated != nil && *(s.SourcemapUpdated) {
 		utility.Set(orig, "filename", s.Original.Filename)
+		utility.Set(orig, "classname", s.Original.Classname)
 		utility.Set(orig, "abs_path", s.Original.AbsPath)
 		utility.Set(orig, "function", s.Original.Function)
 		utility.Set(orig, "colno", s.Original.Colno)
@@ -153,21 +122,21 @@ func (s *StacktraceFrame) IsLibraryFrame() bool {
 }
 
 func (s *StacktraceFrame) IsSourcemapApplied() bool {
-	return s.Sourcemap.Updated != nil && *s.Sourcemap.Updated
+	return s.SourcemapUpdated != nil && *s.SourcemapUpdated
 }
 
 func (s *StacktraceFrame) setExcludeFromGrouping(pattern *regexp.Regexp) {
-	s.ExcludeFromGrouping = pattern.MatchString(s.Filename)
+	s.ExcludeFromGrouping = s.Filename != nil && pattern.MatchString(*s.Filename)
 }
 
 func (s *StacktraceFrame) setLibraryFrame(pattern *regexp.Regexp) {
 	s.Original.LibraryFrame = s.LibraryFrame
-	libraryFrame := pattern.MatchString(s.Filename) ||
+	libraryFrame := (s.Filename != nil && pattern.MatchString(*s.Filename)) ||
 		(s.AbsPath != nil && pattern.MatchString(*s.AbsPath))
 	s.LibraryFrame = &libraryFrame
 }
 
-func (s *StacktraceFrame) applySourcemap(store *sourcemap.Store, service *metadata.Service, prevFunction string) (function string, errMsg string) {
+func (s *StacktraceFrame) applySourcemap(ctx context.Context, store *sourcemap.Store, service *Service, prevFunction string) (function string, errMsg string) {
 	function = prevFunction
 
 	var valid bool
@@ -179,14 +148,14 @@ func (s *StacktraceFrame) applySourcemap(store *sourcemap.Store, service *metada
 	s.setOriginalSourcemapData()
 
 	path := utility.CleanUrlPath(*s.Original.AbsPath)
-	mapper, err := store.Fetch(*service.Name, *service.Version, path)
+	mapper, err := store.Fetch(ctx, service.Name, service.Version, path)
 	if err != nil {
 		errMsg = err.Error()
 		return
 	}
 	if mapper == nil {
 		errMsg = fmt.Sprintf("No Sourcemap available for ServiceName %s, ServiceVersion %s, Path %s.",
-			*service.Name, *service.Version, path)
+			service.Name, service.Version, path)
 		s.updateError(errMsg)
 		return
 	}
@@ -199,7 +168,7 @@ func (s *StacktraceFrame) applySourcemap(store *sourcemap.Store, service *metada
 	}
 
 	if file != "" {
-		s.Filename = file
+		s.Filename = &file
 	}
 
 	s.Colno = &col
@@ -241,15 +210,16 @@ func (s *StacktraceFrame) setOriginalSourcemapData() {
 	s.Original.Function = s.Function
 	s.Original.Lineno = s.Lineno
 	s.Original.Filename = s.Filename
+	s.Original.Classname = s.Classname
 
 	s.Original.sourcemapCopied = true
 }
 
 func (s *StacktraceFrame) updateError(errMsg string) {
-	s.Sourcemap.Error = &errMsg
+	s.SourcemapError = &errMsg
 	s.updateSmap(false)
 }
 
 func (s *StacktraceFrame) updateSmap(updated bool) {
-	s.Sourcemap.Updated = &updated
+	s.SourcemapUpdated = &updated
 }

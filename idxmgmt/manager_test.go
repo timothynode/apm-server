@@ -26,11 +26,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/elastic/beats/libbeat/beat"
-	"github.com/elastic/beats/libbeat/common"
-	libidxmgmt "github.com/elastic/beats/libbeat/idxmgmt"
-	libilm "github.com/elastic/beats/libbeat/idxmgmt/ilm"
-	"github.com/elastic/beats/libbeat/template"
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/common"
+	libidxmgmt "github.com/elastic/beats/v7/libbeat/idxmgmt"
+	libilm "github.com/elastic/beats/v7/libbeat/idxmgmt/ilm"
+	"github.com/elastic/beats/v7/libbeat/template"
 )
 
 func TestManager_VerifySetup(t *testing.T) {
@@ -324,12 +324,12 @@ func TestManager_SetupILM(t *testing.T) {
 			version:              "6.2.0",
 			templatesILMDisabled: 4,
 		},
-		"Default ES Unsupported ILM Setup disabled": {
+		"Default ES Unsupported ILM setup disabled": {
 			cfg:      common.MapStr{"apm-server.ilm.setup.enabled": false},
 			loadMode: libidxmgmt.LoadModeEnabled,
 			version:  "6.2.0",
 		},
-		"ILM True ES Unsupported ILM Setup disabled": {
+		"ILM True ES Unsupported ILM setup disabled": {
 			cfg:      common.MapStr{"apm-server.ilm.setup.enabled": false, "apm-server.ilm.enabled": true},
 			loadMode: libidxmgmt.LoadModeEnabled,
 			version:  "6.2.0",
@@ -359,7 +359,7 @@ func TestManager_SetupILM(t *testing.T) {
 			loadMode:             libidxmgmt.LoadModeEnabled,
 			templatesILMDisabled: 4,
 		},
-		"ESIndexConfigured Setup disabled": {
+		"ESIndexConfigured setup disabled": {
 			cfg: common.MapStr{
 				"apm-server.ilm.enabled":       "auto",
 				"apm-server.ilm.setup.enabled": false,
@@ -368,7 +368,7 @@ func TestManager_SetupILM(t *testing.T) {
 				"output.elasticsearch.index":   "custom"},
 			loadMode: libidxmgmt.LoadModeEnabled,
 		},
-		"ESIndicesConfigured Setup disabled": {
+		"ESIndicesConfigured setup disabled": {
 			cfg: common.MapStr{
 				"apm-server.ilm.enabled":       "auto",
 				"apm-server.ilm.setup.enabled": false,

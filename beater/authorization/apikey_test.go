@@ -18,12 +18,14 @@
 package authorization
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.elastic.co/apm/apmtest"
 
 	"github.com/elastic/apm-server/elasticsearch"
 	"github.com/elastic/apm-server/elasticsearch/estest"
@@ -41,19 +43,19 @@ func TestApikeyBuilder(t *testing.T) {
 	handler2 := tc.builder.forKey(key)
 
 	// add existing privileges to shared cache
-	privilegesValid := privileges{}
+	privilegesValid := elasticsearch.Permissions{}
 	for _, p := range PrivilegesAll {
-		privilegesValid[p] = true
+		privilegesValid[p.Action] = true
 	}
-	resource := "service-go"
+	resource := elasticsearch.Resource("service-go")
 	tc.cache.add(id(key, resource), privilegesValid)
 
 	// check that cache is actually shared between apiKeyHandlers
-	allowed, err := handler1.AuthorizedFor(resource)
+	allowed, err := handler1.AuthorizedFor(context.Background(), resource)
 	assert.NoError(t, err)
 	assert.True(t, allowed)
 
-	allowed, err = handler2.AuthorizedFor(resource)
+	allowed, err = handler2.AuthorizedFor(context.Background(), resource)
 	assert.NoError(t, err)
 	assert.True(t, allowed)
 }
@@ -70,11 +72,11 @@ func TestAPIKey_AuthorizedFor(t *testing.T) {
 		tc.setup(t)
 		handler := tc.builder.forKey("")
 
-		authorized, err := handler.AuthorizedFor("data:ingest")
+		authorized, err := handler.AuthorizedFor(context.Background(), "data:ingest")
 		assert.False(t, authorized)
 		assert.NoError(t, err)
 
-		authorized, err = handler.AuthorizedFor("apm:read")
+		authorized, err = handler.AuthorizedFor(context.Background(), "apm:read")
 		assert.Error(t, err)
 		assert.False(t, authorized)
 	})
@@ -85,22 +87,22 @@ func TestAPIKey_AuthorizedFor(t *testing.T) {
 		tc.setup(t)
 		key := ""
 		handler := tc.builder.forKey(key)
-		resourceValid := "foo"
-		resourceInvalid := "bar"
-		resourceMissing := "missing"
+		resourceValid := elasticsearch.Resource("foo")
+		resourceInvalid := elasticsearch.Resource("bar")
+		resourceMissing := elasticsearch.Resource("missing")
 
-		tc.cache.add(id(key, resourceValid), privileges{tc.anyOfPrivileges[0]: true})
-		tc.cache.add(id(key, resourceInvalid), privileges{tc.anyOfPrivileges[0]: false})
+		tc.cache.add(id(key, resourceValid), elasticsearch.Permissions{tc.anyOfPrivileges[0]: true})
+		tc.cache.add(id(key, resourceInvalid), elasticsearch.Permissions{tc.anyOfPrivileges[0]: false})
 
-		valid, err := handler.AuthorizedFor(resourceValid)
+		valid, err := handler.AuthorizedFor(context.Background(), resourceValid)
 		require.NoError(t, err)
 		assert.True(t, valid)
 
-		valid, err = handler.AuthorizedFor(resourceInvalid)
+		valid, err = handler.AuthorizedFor(context.Background(), resourceInvalid)
 		require.NoError(t, err)
 		assert.False(t, valid)
 
-		valid, err = handler.AuthorizedFor(resourceMissing)
+		valid, err = handler.AuthorizedFor(context.Background(), resourceMissing)
 		require.Error(t, err)
 		assert.False(t, valid)
 	})
@@ -110,31 +112,42 @@ func TestAPIKey_AuthorizedFor(t *testing.T) {
 		tc.setup(t)
 		handler := tc.builder.forKey("key")
 
-		valid, err := handler.AuthorizedFor("foo")
+		valid, err := handler.AuthorizedFor(context.Background(), "foo")
 		require.NoError(t, err)
 		assert.True(t, valid)
 
-		valid, err = handler.AuthorizedFor("bar")
+		valid, err = handler.AuthorizedFor(context.Background(), "bar")
 		require.NoError(t, err)
 		assert.False(t, valid)
 
-		valid, err = handler.AuthorizedFor("missing")
+		valid, err = handler.AuthorizedFor(context.Background(), "missing")
 		require.NoError(t, err)
 		assert.False(t, valid)
 		assert.Equal(t, 3, tc.cache.cache.ItemCount())
 	})
 
-	t.Run("error from ES", func(t *testing.T) {
+	t.Run("client error", func(t *testing.T) {
 		tc := &apikeyTestcase{
-			transport: estest.NewTransport(t, http.StatusInternalServerError, nil)}
+			transport: estest.NewTransport(t, -1, nil)}
 		tc.setup(t)
 		handler := tc.builder.forKey("12a3")
 
-		valid, err := handler.AuthorizedFor("xyz")
+		valid, err := handler.AuthorizedFor(context.Background(), "xyz")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "Internal server error")
+		assert.Contains(t, err.Error(), "client error")
 		assert.False(t, valid)
 		assert.Zero(t, tc.cache.cache.ItemCount())
+	})
+
+	t.Run("unauthorized status from ES", func(t *testing.T) {
+		tc := &apikeyTestcase{transport: estest.NewTransport(t, http.StatusUnauthorized, nil)}
+		tc.setup(t)
+		handler := tc.builder.forKey("12a3")
+
+		valid, err := handler.AuthorizedFor(context.Background(), "xyz")
+		require.NoError(t, err)
+		assert.False(t, valid)
+		assert.Equal(t, 1, tc.cache.cache.ItemCount()) // unauthorized responses are cached
 	})
 
 	t.Run("invalid status from ES", func(t *testing.T) {
@@ -142,17 +155,17 @@ func TestAPIKey_AuthorizedFor(t *testing.T) {
 		tc.setup(t)
 		handler := tc.builder.forKey("12a3")
 
-		valid, err := handler.AuthorizedFor("xyz")
-		require.NoError(t, err)
+		valid, err := handler.AuthorizedFor(context.Background(), "xyz")
+		require.Error(t, err)
 		assert.False(t, valid)
-		assert.Equal(t, 1, tc.cache.cache.ItemCount())
+		assert.Equal(t, 0, tc.cache.cache.ItemCount())
 	})
 
 	t.Run("decode error from ES", func(t *testing.T) {
 		tc := &apikeyTestcase{transport: estest.NewTransport(t, http.StatusOK, nil)}
 		tc.setup(t)
 		handler := tc.builder.forKey("123")
-		valid, err := handler.AuthorizedFor("foo")
+		valid, err := handler.AuthorizedFor(context.Background(), "foo")
 		require.Error(t, err)
 		assert.False(t, valid)
 		assert.Zero(t, tc.cache.cache.ItemCount())
@@ -163,7 +176,7 @@ type apikeyTestcase struct {
 	transport       *estest.Transport
 	client          elasticsearch.Client
 	cache           *privilegesCache
-	anyOfPrivileges []string
+	anyOfPrivileges []elasticsearch.PrivilegeAction
 
 	builder *apikeyBuilder
 }
@@ -174,19 +187,40 @@ func (tc *apikeyTestcase) setup(t *testing.T) {
 		if tc.transport == nil {
 			tc.transport = estest.NewTransport(t, http.StatusOK, map[string]interface{}{
 				"application": map[string]interface{}{
-					application: map[string]privileges{
-						"foo": {PrivilegeAgentConfigRead: true, PrivilegeEventWrite: true, PrivilegeSourcemapWrite: false},
-						"bar": {PrivilegeAgentConfigRead: true, PrivilegeEventWrite: false},
+					"apm": map[string]map[string]interface{}{
+						"foo": {"config_agent:read": true, "event:write": true, "sourcemap:write": false},
+						"bar": {"config_agent:read": true, "event:write": false},
 					}}})
 		}
 		tc.client, err = estest.NewElasticsearchClient(tc.transport)
 		require.NoError(t, err)
 	}
 	if tc.cache == nil {
-		tc.cache = newPrivilegesCache(time.Millisecond, 5)
+		tc.cache = newPrivilegesCache(time.Minute, 5)
 	}
 	if tc.anyOfPrivileges == nil {
-		tc.anyOfPrivileges = []string{PrivilegeEventWrite, PrivilegeSourcemapWrite}
+		tc.anyOfPrivileges = []elasticsearch.PrivilegeAction{PrivilegeEventWrite.Action, PrivilegeSourcemapWrite.Action}
 	}
 	tc.builder = newApikeyBuilder(tc.client, tc.cache, tc.anyOfPrivileges)
+}
+
+func TestApikeyBuilderTraceContext(t *testing.T) {
+	transport := estest.NewTransport(t, http.StatusOK, map[string]interface{}{})
+	client, err := estest.NewElasticsearchClient(transport)
+	require.NoError(t, err)
+
+	cache := newPrivilegesCache(time.Minute, 5)
+	anyOfPrivileges := []elasticsearch.PrivilegeAction{PrivilegeEventWrite.Action, PrivilegeSourcemapWrite.Action}
+	builder := newApikeyBuilder(client, cache, anyOfPrivileges)
+	handler := builder.forKey("12a3")
+
+	_, spans, _ := apmtest.WithTransaction(func(ctx context.Context) {
+		// When AuthorizedFor is called with a context containing
+		// a transaction, the underlying Elasticsearch query should
+		// create a span.
+		handler.AuthorizedFor(ctx, ResourceInternal)
+		handler.AuthorizedFor(ctx, ResourceInternal) // cached, no query
+	})
+	require.Len(t, spans, 1)
+	assert.Equal(t, "elasticsearch", spans[0].Subtype)
 }

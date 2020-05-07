@@ -18,13 +18,12 @@
 package api
 
 import (
-	"expvar"
 	"net/http"
 	"regexp"
 
-	"github.com/elastic/beats/libbeat/monitoring"
+	"github.com/elastic/beats/v7/libbeat/monitoring"
 
-	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/v7/libbeat/logp"
 
 	"github.com/elastic/apm-server/beater/api/asset/sourcemap"
 	"github.com/elastic/apm-server/beater/api/config/agent"
@@ -35,10 +34,8 @@ import (
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/beater/middleware"
 	"github.com/elastic/apm-server/beater/request"
-	"github.com/elastic/apm-server/decoder"
 	"github.com/elastic/apm-server/kibana"
 	logs "github.com/elastic/apm-server/log"
-	"github.com/elastic/apm-server/model"
 	psourcemap "github.com/elastic/apm-server/processor/asset/sourcemap"
 	"github.com/elastic/apm-server/processor/stream"
 	"github.com/elastic/apm-server/publish"
@@ -66,10 +63,8 @@ const (
 	AgentConfigRUMPath = "/config/v1/rum/agents"
 	// IntakeRUMPath defines the path to ingest monitored RUM events
 	IntakeRUMPath = "/intake/v2/rum/events"
-)
 
-var (
-	emptyDecoder = func(*http.Request) (map[string]interface{}, error) { return map[string]interface{}{}, nil }
+	IntakeRUMV3Path = "/intake/v3/rum/events"
 )
 
 type route struct {
@@ -79,7 +74,7 @@ type route struct {
 
 // NewMux registers apm handlers to paths building up the APM Server API.
 func NewMux(beaterConfig *config.Config, report publish.Reporter) (*http.ServeMux, error) {
-	pool := newContextPool()
+	pool := request.NewContextPool()
 	mux := http.NewServeMux()
 	logger := logp.NewLogger(logs.Handler)
 
@@ -94,6 +89,7 @@ func NewMux(beaterConfig *config.Config, report publish.Reporter) (*http.ServeMu
 		{AgentConfigPath, backendAgentConfigHandler},
 		{AgentConfigRUMPath, rumAgentConfigHandler},
 		{IntakeRUMPath, rumIntakeHandler},
+		{IntakeRUMV3Path, rumV3IntakeHandler},
 		{IntakePath, backendIntakeHandler},
 	}
 
@@ -112,32 +108,26 @@ func NewMux(beaterConfig *config.Config, report publish.Reporter) (*http.ServeMu
 			return nil, err
 		}
 		logger.Infof("Path %s added to request handler", route.path)
-		mux.Handle(route.path, pool.handler(h))
+		mux.Handle(route.path, pool.HTTPHandler(h))
 
 	}
 	if beaterConfig.Expvar.IsEnabled() {
 		path := beaterConfig.Expvar.URL
 		logger.Infof("Path %s added to request handler", path)
-		mux.Handle(path, expvar.Handler())
+		mux.Handle(path, http.HandlerFunc(debugVarsHandler))
 	}
 	return mux, nil
 }
 
 func profileHandler(cfg *config.Config, builder *authorization.Builder, reporter publish.Reporter) (request.Handler, error) {
-	h := profile.Handler(systemMetadataDecoder(cfg, emptyDecoder), transform.Config{}, reporter)
-	authHandler := builder.ForPrivilege(authorization.PrivilegeEventWrite)
+	h := profile.Handler(transform.Config{}, reporter)
+	authHandler := builder.ForPrivilege(authorization.PrivilegeEventWrite.Action)
 	return middleware.Wrap(h, backendMiddleware(cfg, authHandler, profile.MonitoringMap)...)
 }
 
 func backendIntakeHandler(cfg *config.Config, builder *authorization.Builder, reporter publish.Reporter) (request.Handler, error) {
-	h := intake.Handler(systemMetadataDecoder(cfg, emptyDecoder),
-		&stream.Processor{
-			Tconfig:      transform.Config{},
-			Mconfig:      model.Config{Experimental: cfg.Mode == config.ModeExperimental},
-			MaxEventSize: cfg.MaxEventSize,
-		},
-		reporter)
-	authHandler := builder.ForPrivilege(authorization.PrivilegeEventWrite)
+	h := intake.Handler(stream.BackendProcessor(cfg), reporter)
+	authHandler := builder.ForPrivilege(authorization.PrivilegeEventWrite.Action)
 	return middleware.Wrap(h, backendMiddleware(cfg, authHandler, intake.MonitoringMap)...)
 }
 
@@ -146,13 +136,16 @@ func rumIntakeHandler(cfg *config.Config, _ *authorization.Builder, reporter pub
 	if err != nil {
 		return nil, err
 	}
-	h := intake.Handler(userMetaDataDecoder(cfg, emptyDecoder),
-		&stream.Processor{
-			Tconfig:      *tcfg,
-			Mconfig:      model.Config{Experimental: cfg.Mode == config.ModeExperimental},
-			MaxEventSize: cfg.MaxEventSize,
-		},
-		reporter)
+	h := intake.Handler(stream.RUMProcessor(cfg, tcfg), reporter)
+	return middleware.Wrap(h, rumMiddleware(cfg, nil, intake.MonitoringMap)...)
+}
+
+func rumV3IntakeHandler(cfg *config.Config, _ *authorization.Builder, reporter publish.Reporter) (request.Handler, error) {
+	tcfg, err := rumTransformConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	h := intake.Handler(stream.RUMV3Processor(cfg, tcfg), reporter)
 	return middleware.Wrap(h, rumMiddleware(cfg, nil, intake.MonitoringMap)...)
 }
 
@@ -161,13 +154,13 @@ func sourcemapHandler(cfg *config.Config, builder *authorization.Builder, report
 	if err != nil {
 		return nil, err
 	}
-	h := sourcemap.Handler(systemMetadataDecoder(cfg, decoder.DecodeSourcemapFormData), psourcemap.Processor, *tcfg, reporter)
-	authHandler := builder.ForPrivilege(authorization.PrivilegeSourcemapWrite)
+	h := sourcemap.Handler(sourcemap.DecodeSourcemapFormData, psourcemap.Processor, *tcfg, reporter)
+	authHandler := builder.ForPrivilege(authorization.PrivilegeSourcemapWrite.Action)
 	return middleware.Wrap(h, sourcemapMiddleware(cfg, authHandler)...)
 }
 
 func backendAgentConfigHandler(cfg *config.Config, builder *authorization.Builder, _ publish.Reporter) (request.Handler, error) {
-	authHandler := builder.ForPrivilege(authorization.PrivilegeAgentConfigRead)
+	authHandler := builder.ForPrivilege(authorization.PrivilegeAgentConfigRead.Action)
 	return agentConfigHandler(cfg, authHandler, backendMiddleware)
 }
 
@@ -179,21 +172,21 @@ type middlewareFunc func(*config.Config, *authorization.Handler, map[request.Res
 
 func agentConfigHandler(cfg *config.Config, authHandler *authorization.Handler, middlewareFunc middlewareFunc) (request.Handler, error) {
 	var client kibana.Client
-	if cfg.Kibana.Enabled() {
-		client = kibana.NewConnectingClient(cfg.Kibana)
+	if cfg.Kibana.Enabled {
+		client = kibana.NewConnectingClient(&cfg.Kibana.ClientConfig)
 	}
 	h := agent.Handler(client, cfg.AgentConfig)
 	msg := "Agent remote configuration is disabled. " +
 		"Configure the `apm-server.kibana` section in apm-server.yml to enable it. " +
 		"If you are using a RUM agent, you also need to configure the `apm-server.rum` section. " +
 		"If you are not using remote configuration, you can safely ignore this error."
-	ks := middleware.KillSwitchMiddleware(cfg.Kibana.Enabled(), msg)
+	ks := middleware.KillSwitchMiddleware(cfg.Kibana.Enabled, msg)
 	return middleware.Wrap(h, append(middlewareFunc(cfg, authHandler, agent.MonitoringMap), ks)...)
 }
 
 func rootHandler(cfg *config.Config, builder *authorization.Builder, _ publish.Reporter) (request.Handler, error) {
 	return middleware.Wrap(root.Handler(),
-		rootMiddleware(cfg, builder.ForAnyOfPrivileges(authorization.PrivilegesAll))...)
+		rootMiddleware(cfg, builder.ForAnyOfPrivileges(authorization.ActionAny))...)
 }
 
 func apmMiddleware(m map[request.ResultID]*monitoring.Int) []middleware.Middleware {
@@ -205,20 +198,30 @@ func apmMiddleware(m map[request.ResultID]*monitoring.Int) []middleware.Middlewa
 	}
 }
 
-func backendMiddleware(_ *config.Config, auth *authorization.Handler, m map[request.ResultID]*monitoring.Int) []middleware.Middleware {
-	return append(apmMiddleware(m),
-		middleware.AuthorizationMiddleware(auth, true))
+func backendMiddleware(cfg *config.Config, auth *authorization.Handler, m map[request.ResultID]*monitoring.Int) []middleware.Middleware {
+	backendMiddleware := append(apmMiddleware(m),
+		middleware.AuthorizationMiddleware(auth, true),
+	)
+	if cfg.AugmentEnabled {
+		backendMiddleware = append(backendMiddleware, middleware.SystemMetadataMiddleware())
+	}
+	return backendMiddleware
 }
 
 func rumMiddleware(cfg *config.Config, _ *authorization.Handler, m map[request.ResultID]*monitoring.Int) []middleware.Middleware {
 	msg := "RUM endpoint is disabled. " +
 		"Configure the `apm-server.rum` section in apm-server.yml to enable ingestion of RUM events. " +
 		"If you are not using the RUM agent, you can safely ignore this error."
-	return append(apmMiddleware(m),
+	rumMiddleware := append(apmMiddleware(m),
 		middleware.SetRumFlagMiddleware(),
 		middleware.SetIPRateLimitMiddleware(cfg.RumConfig.EventRate),
-		middleware.CORSMiddleware(cfg.RumConfig.AllowOrigins),
-		middleware.KillSwitchMiddleware(cfg.RumConfig.IsEnabled(), msg))
+		middleware.CORSMiddleware(cfg.RumConfig.AllowOrigins, cfg.RumConfig.AllowHeaders),
+		middleware.KillSwitchMiddleware(cfg.RumConfig.IsEnabled(), msg),
+	)
+	if cfg.AugmentEnabled {
+		rumMiddleware = append(rumMiddleware, middleware.UserMetadataMiddleware())
+	}
+	return rumMiddleware
 }
 
 func sourcemapMiddleware(cfg *config.Config, auth *authorization.Handler) []middleware.Middleware {
@@ -233,14 +236,6 @@ func sourcemapMiddleware(cfg *config.Config, auth *authorization.Handler) []midd
 func rootMiddleware(_ *config.Config, auth *authorization.Handler) []middleware.Middleware {
 	return append(apmMiddleware(root.MonitoringMap),
 		middleware.AuthorizationMiddleware(auth, false))
-}
-
-func systemMetadataDecoder(beaterConfig *config.Config, d decoder.ReqDecoder) decoder.ReqDecoder {
-	return decoder.DecodeSystemData(d, beaterConfig.AugmentEnabled)
-}
-
-func userMetaDataDecoder(beaterConfig *config.Config, d decoder.ReqDecoder) decoder.ReqDecoder {
-	return decoder.DecodeUserData(d, beaterConfig.AugmentEnabled)
 }
 
 func rumTransformConfig(beaterConfig *config.Config) (*transform.Config, error) {

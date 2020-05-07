@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/model/span/generated/schema"
 	"github.com/elastic/apm-server/processor/stream"
 	"github.com/elastic/apm-server/tests"
@@ -28,7 +29,9 @@ import (
 
 func spanProcSetup() *tests.ProcessorSetup {
 	return &tests.ProcessorSetup{
-		Proc:            &intakeTestProcessor{Processor: stream.Processor{MaxEventSize: lrSize}},
+		Proc: &intakeTestProcessor{
+			Processor: *stream.BackendProcessor(&config.Config{MaxEventSize: lrSize}),
+		},
 		FullPayloadPath: "../testdata/intake-v2/spans.ndjson",
 		Schema:          schema.ModelSchema,
 		SchemaPrefix:    "span",
@@ -45,6 +48,7 @@ func spanPayloadAttrsNotInFields() *tests.Set {
 		tests.Group("context"),
 		tests.Group("span.db"),
 		tests.Group("span.http"),
+		"span.message.body", "span.message.headers",
 	)
 }
 
@@ -84,6 +88,7 @@ func spanPayloadAttrsNotInJsonSchema() *tests.Set {
 		"span",
 		"span.stacktrace.vars.key",
 		tests.Group("span.context.tags"),
+		"span.context.http.response.headers.content-type",
 		"span.context.service.environment", //used to check that only defined service fields are set on spans
 	)
 }
@@ -92,6 +97,8 @@ func spanJsonSchemaNotInPayloadAttrs() *tests.Set {
 	return tests.NewSet(
 		"span.transaction_id",
 		"span.context.experimental",
+		"span.context.message.body",
+		"span.context.message.headers",
 	)
 }
 
@@ -154,6 +161,7 @@ func spanKeywordExceptionKeys() *tests.Set {
 		tests.Group("user"),
 		tests.Group("url"),
 		tests.Group("http"),
+		tests.Group("cloud"),
 	),
 		transactionContext(),
 	)
@@ -182,14 +190,17 @@ func TestKeywordLimitationOnSpanAttrs(t *testing.T) {
 		spanKeywordExceptionKeys(),
 		[]tests.FieldTemplateMapping{
 			{Template: "transaction.id", Mapping: "transaction_id"},
+			{Template: "child.id", Mapping: "child_ids"},
 			{Template: "parent.id", Mapping: "parent_id"},
 			{Template: "trace.id", Mapping: "trace_id"},
 			{Template: "span.id", Mapping: "id"},
 			{Template: "span.db.link", Mapping: "context.db.link"},
 			{Template: "span.destination.service", Mapping: "context.destination.service"},
+			{Template: "span.message.", Mapping: "context.message."},
 			{Template: "span.", Mapping: ""},
 			{Template: "destination.address", Mapping: "context.destination.address"},
 			{Template: "destination.port", Mapping: "context.destination.port"},
+			{Template: "span.message.queue.name", Mapping: "context.message.queue.name"},
 		},
 	)
 }

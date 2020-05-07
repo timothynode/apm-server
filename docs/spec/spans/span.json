@@ -28,6 +28,16 @@
                     "type": "string",
                     "maxLength": 1024
                 },
+                "child_ids": {
+                    "description": "List of successor transactions and/or spans.",
+                    "type": ["array", "null"],
+                    "minItems": 0,
+                    "maxLength": 1024,
+                    "items": {
+                        "type": "string",
+                        "maxLength": 1024
+                    }
+                },
                 "start": {
                     "type": ["number", "null"],
                     "description": "Offset relative to the transaction's timestamp identifying the start of the span, in milliseconds"
@@ -74,7 +84,7 @@
                                             "maxLength": 1024
                                         }
                                     },
-				    "required": ["type", "name", "resource"]
+                                    "required": ["type", "name", "resource"]
                                 }
                             }
                         },
@@ -102,6 +112,10 @@
                                 "user": {
                                     "type": ["string", "null"],
                                     "description": "Username for accessing database"
+                                },
+                                "rows_affected": {
+                                    "type": ["integer", "null"],
+                                    "description": "Number of rows affected by the SQL statement (if applicable)"
                                 }
                             }
                         },
@@ -115,12 +129,15 @@
                                 },
                                 "status_code": {
                                     "type": ["integer", "null"],
-                                    "description": "The status code of the http request."
+                                    "description": "Deprecated: Use span.context.http.response.status_code instead."
                                 },
                                 "method": {
                                     "type": ["string", "null"],
                                     "maxLength": 1024,
                                     "description": "The method of the http request."
+                                },
+                                "response": {
+                                    "$ref": "../http_response.json"
                                 }
                             }
                         },
@@ -170,12 +187,16 @@
                                     "maxLength": 1024
                                 }
                             }
+                        },
+                        "message": {
+                            "$ref": "../message.json"
                         }
                     }
                 },
                 "duration": {
                     "type": "number",
-                    "description": "Duration of the span in milliseconds"
+                    "description": "Duration of the span in milliseconds",
+                    "minimum": 0
                 },
                 "name": {
                     "type": "string",

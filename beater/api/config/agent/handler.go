@@ -23,10 +23,11 @@ import (
 	"strings"
 	"time"
 
+	"go.elastic.co/apm"
+
 	"github.com/pkg/errors"
 
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/monitoring"
+	"github.com/elastic/beats/v7/libbeat/monitoring"
 
 	"github.com/elastic/apm-server/agentcfg"
 	"github.com/elastic/apm-server/beater/config"
@@ -49,14 +50,15 @@ const (
 
 var (
 	// MonitoringMap holds a mapping for request.IDs to monitoring counters
-	MonitoringMap = request.MonitoringMapForRegistry(registry)
-	registry      = monitoring.Default.NewRegistry("apm-server.acm", monitoring.PublishExpvar)
+	MonitoringMap = request.DefaultMonitoringMapForRegistry(registry)
+	registry      = monitoring.Default.NewRegistry("apm-server.acm")
 
 	errMsgKibanaDisabled     = errors.New(msgKibanaDisabled)
 	errMsgNoKibanaConnection = errors.New(msgNoKibanaConnection)
+	errCacheControl          = fmt.Sprintf("max-age=%v, must-revalidate", errMaxAgeDuration.Seconds())
 
-	minKibanaVersion = common.MustNewVersion("7.5.0")
-	errCacheControl  = fmt.Sprintf("max-age=%v, must-revalidate", errMaxAgeDuration.Seconds())
+	// rumAgents keywords (new and old)
+	rumAgents = []string{"rum-js", "js-base"}
 )
 
 // Handler returns a request.Handler for managing agent central configuration requests.
@@ -87,8 +89,9 @@ func Handler(client kibana.Client, config *config.AgentConfig) request.Handler {
 			return
 		}
 
-		result, err := fetcher.Fetch(query)
+		result, err := fetcher.Fetch(c.Request.Context(), query)
 		if err != nil {
+			apm.CaptureError(c.Request.Context(), err).Send()
 			extractInternalError(c, err, c.Authorization.IsAuthorizationConfigured())
 			c.Write()
 			return
@@ -118,7 +121,7 @@ func validateClient(c *request.Context, client kibana.Client, withAuth bool) boo
 		return false
 	}
 
-	if supported, err := client.SupportsVersion(minKibanaVersion, true); !supported {
+	if supported, err := client.SupportsVersion(c.Request.Context(), agentcfg.KibanaMinVersion, true); !supported {
 		if err != nil {
 			c.Result.Set(request.IDResponseErrorsServiceUnavailable,
 				http.StatusServiceUnavailable,
@@ -128,10 +131,10 @@ func validateClient(c *request.Context, client kibana.Client, withAuth bool) boo
 			return false
 		}
 
-		version, _ := client.GetVersion()
+		version, _ := client.GetVersion(c.Request.Context())
 
 		errMsg := fmt.Sprintf("%s: min version %+v, configured version %+v",
-			msgKibanaVersionNotCompatible, minKibanaVersion, version.String())
+			msgKibanaVersionNotCompatible, agentcfg.KibanaMinVersion, version.String())
 		body := authErrMsg(errMsg, msgKibanaVersionNotCompatible, withAuth)
 		c.Result.Set(request.IDResponseErrorsServiceUnavailable,
 			http.StatusServiceUnavailable,
@@ -151,10 +154,12 @@ func buildQuery(c *request.Context) (query agentcfg.Query, err error) {
 		err = convert.FromReader(r.Body, &query)
 	case http.MethodGet:
 		params := r.URL.Query()
-		query = agentcfg.NewQuery(
-			params.Get(agentcfg.ServiceName),
-			params.Get(agentcfg.ServiceEnv),
-		)
+		query = agentcfg.Query{
+			Service: agentcfg.Service{
+				Name:        params.Get(agentcfg.ServiceName),
+				Environment: params.Get(agentcfg.ServiceEnv),
+			},
+		}
 	default:
 		err = errors.Errorf("%s: %s", msgMethodUnsupported, r.Method)
 	}
@@ -162,9 +167,10 @@ func buildQuery(c *request.Context) (query agentcfg.Query, err error) {
 	if err == nil && query.Service.Name == "" {
 		err = errors.New(agentcfg.ServiceName + " is required")
 	}
-	query.IsRum = c.IsRum
+	if c.IsRum {
+		query.InsecureAgents = rumAgents
+	}
 	query.Etag = ifNoneMatch(c)
-
 	return
 }
 
@@ -180,6 +186,13 @@ func extractInternalError(c *request.Context, err error, withAuth bool) {
 	case strings.Contains(msg, agentcfg.ErrMsgReadKibanaResponse):
 		body = authErrMsg(msg, agentcfg.ErrMsgReadKibanaResponse, withAuth)
 		keyword = agentcfg.ErrMsgReadKibanaResponse
+
+	case strings.Contains(msg, agentcfg.ErrUnauthorized):
+		fullMsg := "APM Server is not authorized to query Kibana. " +
+			"Please configure apm-server.kibana.username and apm-server.kibana.password, " +
+			"and ensure the user has the necessary privileges."
+		body = authErrMsg(fullMsg, agentcfg.ErrUnauthorized, withAuth)
+		keyword = agentcfg.ErrUnauthorized
 
 	default:
 		body = authErrMsg(msg, msgServiceUnavailable, withAuth)

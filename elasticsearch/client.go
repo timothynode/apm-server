@@ -19,47 +19,41 @@ package elasticsearch
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io"
+	"io/ioutil"
 	"net/http"
 
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/version"
+	"go.elastic.co/apm/module/apmelasticsearch"
 
-	v7 "github.com/elastic/go-elasticsearch/v7"
-	v7esapi "github.com/elastic/go-elasticsearch/v7/esapi"
-
-	v8 "github.com/elastic/go-elasticsearch/v8"
-	v8esapi "github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/version"
+	esv7 "github.com/elastic/go-elasticsearch/v7"
+	"github.com/elastic/go-elasticsearch/v7/esapi"
+	esv8 "github.com/elastic/go-elasticsearch/v8"
 )
 
 // Client is an interface designed to abstract away version differences between elasticsearch clients
 type Client interface {
-	// Search performs a query against the given index with the given body
-	Search(index string, body io.Reader) (int, io.ReadCloser, error)
-	SecurityHasPrivilegesRequest(body io.Reader, header http.Header) (int, io.ReadCloser, error)
+	// Perform satisfies esapi.Transport
+	Perform(*http.Request) (*http.Response, error)
+	// TODO: deprecate
+	SearchQuery(ctx context.Context, index string, body io.Reader) (int, io.ReadCloser, error)
 }
 
 type clientV8 struct {
-	client *v8.Client
+	*esv8.Client
 }
 
-// Search satisfies the Client interface for version 8
-func (c clientV8) Search(index string, body io.Reader) (int, io.ReadCloser, error) {
-	return v8Response(c.client.Search(
-		c.client.Search.WithContext(context.Background()),
-		c.client.Search.WithIndex(index),
-		c.client.Search.WithBody(body),
-		c.client.Search.WithTrackTotalHits(true),
-		c.client.Search.WithPretty(),
-	))
-}
-
-func (c clientV8) SecurityHasPrivilegesRequest(body io.Reader, header http.Header) (int, io.ReadCloser, error) {
-	hasPrivileges := v8esapi.SecurityHasPrivilegesRequest{Body: body, Header: header}
-	return v8Response(hasPrivileges.Do(context.Background(), c.client))
-}
-
-func v8Response(response *v8esapi.Response, err error) (int, io.ReadCloser, error) {
+func (c clientV8) SearchQuery(ctx context.Context, index string, body io.Reader) (int, io.ReadCloser, error) {
+	response, err := c.Search(
+		c.Search.WithContext(ctx),
+		c.Search.WithIndex(index),
+		c.Search.WithBody(body),
+		c.Search.WithTrackTotalHits(true),
+		c.Search.WithPretty(),
+	)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -67,26 +61,17 @@ func v8Response(response *v8esapi.Response, err error) (int, io.ReadCloser, erro
 }
 
 type clientV7 struct {
-	client *v7.Client
+	*esv7.Client
 }
 
-// Search satisfies the Client interface for version 7
-func (c clientV7) Search(index string, body io.Reader) (int, io.ReadCloser, error) {
-	return v7Response(c.client.Search(
-		c.client.Search.WithContext(context.Background()),
-		c.client.Search.WithIndex(index),
-		c.client.Search.WithBody(body),
-		c.client.Search.WithTrackTotalHits(true),
-		c.client.Search.WithPretty(),
-	))
-}
-
-func (c clientV7) SecurityHasPrivilegesRequest(body io.Reader, header http.Header) (int, io.ReadCloser, error) {
-	hasPrivileges := v7esapi.SecurityHasPrivilegesRequest{Body: body, Header: header}
-	return v7Response(hasPrivileges.Do(context.Background(), c.client))
-}
-
-func v7Response(response *v7esapi.Response, err error) (int, io.ReadCloser, error) {
+func (c clientV7) SearchQuery(ctx context.Context, index string, body io.Reader) (int, io.ReadCloser, error) {
+	response, err := c.Search(
+		c.Search.WithContext(ctx),
+		c.Search.WithIndex(index),
+		c.Search.WithBody(body),
+		c.Search.WithTrackTotalHits(true),
+		c.Search.WithPretty(),
+	)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -107,6 +92,10 @@ func NewClient(config *Config) (Client, error) {
 
 // NewVersionedClient returns the right elasticsearch client for the current Stack version, as an interface
 func NewVersionedClient(apikey, user, pwd string, addresses []string, transport http.RoundTripper) (Client, error) {
+	if apikey != "" {
+		apikey = base64.StdEncoding.EncodeToString([]byte(apikey))
+	}
+	transport = apmelasticsearch.WrapRoundTripper(transport)
 	version := common.MustNewVersion(version.GetDefaultVersion())
 	if version.IsMajor(8) {
 		c, err := newV8Client(apikey, user, pwd, addresses, transport)
@@ -116,8 +105,8 @@ func NewVersionedClient(apikey, user, pwd string, addresses []string, transport 
 	return clientV7{c}, err
 }
 
-func newV7Client(apikey, user, pwd string, addresses []string, transport http.RoundTripper) (*v7.Client, error) {
-	return v7.NewClient(v7.Config{
+func newV7Client(apikey, user, pwd string, addresses []string, transport http.RoundTripper) (*esv7.Client, error) {
+	return esv7.NewClient(esv7.Config{
 		APIKey:    apikey,
 		Username:  user,
 		Password:  pwd,
@@ -126,12 +115,56 @@ func newV7Client(apikey, user, pwd string, addresses []string, transport http.Ro
 	})
 }
 
-func newV8Client(apikey, user, pwd string, addresses []string, transport http.RoundTripper) (*v8.Client, error) {
-	return v8.NewClient(v8.Config{
+func newV8Client(apikey, user, pwd string, addresses []string, transport http.RoundTripper) (*esv8.Client, error) {
+	return esv8.NewClient(esv8.Config{
 		APIKey:    apikey,
 		Username:  user,
 		Password:  pwd,
 		Addresses: addresses,
 		Transport: transport,
 	})
+}
+
+func doRequest(ctx context.Context, transport esapi.Transport, req esapi.Request, out interface{}) error {
+	resp, err := req.Do(ctx, transport)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.IsError() {
+		bytes, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		return &Error{
+			StatusCode: resp.StatusCode,
+			Header:     resp.Header,
+			body:       string(bytes),
+		}
+	}
+	if out != nil {
+		err = json.NewDecoder(resp.Body).Decode(out)
+	}
+	return err
+}
+
+// Error holds the details for a failed Elasticsearch request.
+//
+// Error is only returned for request is serviced, and not when
+// a client or network failure occurs.
+type Error struct {
+	// StatusCode holds the HTTP response status code.
+	StatusCode int
+
+	// Header holds the HTTP response headers.
+	Header http.Header
+
+	body string
+}
+
+func (e *Error) Error() string {
+	if e.body != "" {
+		return e.body
+	}
+	return http.StatusText(e.StatusCode)
 }

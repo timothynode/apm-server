@@ -20,8 +20,11 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -32,15 +35,17 @@ import (
 	"github.com/magefile/mage/sh"
 	"github.com/pkg/errors"
 
-	"github.com/elastic/beats/dev-tools/mage"
+	"github.com/elastic/beats/v7/dev-tools/mage"
+	"github.com/elastic/beats/v7/libbeat/asset"
+	"github.com/elastic/beats/v7/libbeat/generator/fields"
+	"github.com/elastic/beats/v7/licenses"
 
 	"github.com/elastic/apm-server/beater/config"
 )
 
 func init() {
-
 	mage.SetBuildVariableSources(&mage.BuildVariableSources{
-		BeatVersion: "vendor/github.com/elastic/beats/libbeat/version/version.go",
+		BeatVersion: mage.DefaultBeatBuildVariableSources.BeatVersion,
 		GoVersion:   ".go-version",
 		DocBranch:   "docs/version.asciidoc",
 	})
@@ -50,6 +55,8 @@ func init() {
 	mage.BeatIndexPrefix = "apm"
 	mage.XPackDir = "x-pack"
 	mage.BeatUser = "apm-server"
+	mage.UseVendor = false
+	mage.CrossBuildMountModcache = true
 }
 
 // Build builds the Beat binary.
@@ -102,6 +109,8 @@ func shortConfigFileParams() mage.ConfigFileParams {
 		ExtraVars: map[string]interface{}{
 			"elasticsearch_hostport": "localhost:9200",
 			"listen_hostport":        "localhost:" + config.DefaultPort,
+			"jaeger_grpc_hostport":   "localhost:14250",
+			"jaeger_http_hostport":   "localhost:14268",
 		},
 	}
 }
@@ -114,6 +123,8 @@ func dockerConfigFileParams() mage.ConfigFileParams {
 		ExtraVars: map[string]interface{}{
 			"elasticsearch_hostport": "elasticsearch:9200",
 			"listen_hostport":        "0.0.0.0:" + config.DefaultPort,
+			"jaeger_grpc_hostport":   "0.0.0.0:14250",
+			"jaeger_http_hostport":   "0.0.0.0:14268",
 		},
 	}
 }
@@ -206,13 +217,113 @@ func TestPackagesInstall() error {
 	return nil
 }
 
-// Update updates the generated files (aka make update).
+// Update updates the generated files.
 func Update() error {
-	return sh.Run("make", "update")
+	mg.Deps(Fields, Config)
+	return nil
 }
 
 func Fields() error {
-	return mage.GenerateFieldsYAML("model")
+	fieldsInclude := "include/fields.go"
+	xpackFieldsInclude := mage.XPackBeatDir(fieldsInclude)
+
+	ossFieldsModules := []string{"model"}
+	xpackFieldsModules := []string{mage.XPackBeatDir()}
+	allFieldsModules := append(ossFieldsModules[:], xpackFieldsModules...)
+
+	// Create include/fields.go from the OSS-only fields.
+	if err := generateFieldsYAML(mage.FieldsYML, ossFieldsModules...); err != nil {
+		return err
+	}
+	if err := mage.GenerateFieldsGo(mage.FieldsYML, fieldsInclude); err != nil {
+		return err
+	}
+
+	// Create docs/fields.asciidoc from all fields from all license types.
+	if err := generateFieldsYAML(mage.FieldsAllYML, allFieldsModules...); err != nil {
+		return err
+	}
+	if err := mage.Docs.FieldDocs(mage.FieldsAllYML); err != nil {
+		return err
+	}
+
+	// Create x-pack/apm-server/include/fields.go from the X-Pack fields.
+	// These supplement the OSS fields, they don't replace them.
+	xpackBeatDir := mage.XPackBeatDir()
+	xpackBeatDirRel, err := filepath.Rel(mage.OSSBeatDir(), xpackBeatDir)
+	if err != nil {
+		return err
+	}
+	xpackFieldsYMLFiles, err := fields.CollectModuleFiles(xpackBeatDir)
+	if err != nil {
+		return err
+	}
+	xpackFieldsData, err := fields.GenerateFieldsYml(xpackFieldsYMLFiles)
+	if err != nil {
+		return err
+	}
+	assetData, err := asset.CreateAsset(
+		licenses.Elastic, mage.BeatName,
+		"XPackFields", // asset name
+		"include",     // package name
+		xpackFieldsData,
+		"asset.ModuleFieldsPri",
+		xpackBeatDirRel,
+	)
+	if err != nil {
+		panic(err)
+	}
+	return ioutil.WriteFile(xpackFieldsInclude, assetData, 0644)
+}
+
+func generateFieldsYAML(output string, modules ...string) error {
+	if err := mage.GenerateFieldsYAMLTo(output, modules...); err != nil {
+		return err
+	}
+	contents, err := ioutil.ReadFile(output)
+	if err != nil {
+		return err
+	}
+
+	// We don't use autodiscover at all, so we can remove those modules from our fields.
+	//
+	// TODO(axw) modify libbeat to make the "common" modules configurable.
+	beatsdir, err := mage.ElasticBeatsDir()
+	if err != nil {
+		return err
+	}
+	files, err := fields.CollectModuleFiles(filepath.Join(beatsdir, "libbeat", "autodiscover", "providers"))
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	for _, ymlfile := range files {
+		file, err := os.Open(ymlfile.Path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		buf.Reset()
+		prefix := strings.Repeat(" ", ymlfile.Indent)
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			buf.WriteString(prefix)
+			buf.WriteString(scanner.Text())
+			buf.WriteRune('\n')
+		}
+		if err := scanner.Err(); err != nil {
+			return err
+		}
+
+		// Remove the contents from the combined file.
+		if i := bytes.Index(contents, buf.Bytes()); i == -1 {
+			return fmt.Errorf("could not find contents of %s in fields.yml", ymlfile.Path)
+		} else {
+			contents = append(contents[:i], contents[i+buf.Len():]...)
+		}
+	}
+	return ioutil.WriteFile(output, contents, 0644)
 }
 
 // Use RACE_DETECTOR=true to enable the race detector.
@@ -227,12 +338,18 @@ func GoTestIntegration(ctx context.Context) error {
 	return mage.GoTest(ctx, mage.DefaultGoTestIntegrationArgs())
 }
 
+// PythonUnitTest executes the python system tests.
+func PythonUnitTest() error {
+	return mage.PythonNoseTest(mage.DefaultPythonTestUnitArgs())
+}
+
 // -----------------------------------------------------------------------------
 
 // Customizations specific to apm-server.
 // - readme.md.tmpl used in packages is customized.
 // - apm-server.reference.yml is not included in packages.
 // - ingest .json files are included in packaging
+// - fields.yml is sourced from the build directory
 
 var emptyDir = filepath.Clean("build/empty")
 var ingestDirGenerated = filepath.Clean("build/packaging/ingest")
@@ -255,9 +372,8 @@ func customizePackaging() {
 	)
 	for idx := len(mage.Packages) - 1; idx >= 0; idx-- {
 		args := &mage.Packages[idx]
-		pkgType := args.Types[0]
-		switch pkgType {
 
+		switch pkgType := args.Types[0]; pkgType {
 		case mage.Zip, mage.TarGz:
 			// Remove the reference config file from packages.
 			delete(args.Spec.Files, "{{.BeatName}}.reference.yml")
@@ -291,11 +407,29 @@ func customizePackaging() {
 			}
 
 		case mage.DMG:
+			// We do not build macOS packages.
 			mage.Packages = append(mage.Packages[:idx], mage.Packages[idx+1:]...)
+			continue
 
 		default:
 			panic(errors.Errorf("unhandled package type: %v", pkgType))
+		}
 
+		for filename, filespec := range args.Spec.Files {
+			switch {
+			case strings.HasPrefix(filespec.Source, "_meta/kibana"):
+				// Remove Kibana dashboard files.
+				delete(args.Spec.Files, filename)
+
+			case filespec.Source == "fields.yml":
+				// Source fields.yml from the build directory.
+				if args.Spec.License == "Elastic License" {
+					filespec.Source = mage.FieldsAllYML
+				} else {
+					filespec.Source = mage.FieldsYML
+				}
+				args.Spec.Files[filename] = filespec
+			}
 		}
 	}
 }
@@ -335,12 +469,19 @@ func Check() error {
 			mage.GitDiff()
 		}
 		return errors.Errorf("some files are not up-to-date. "+
-			"Run 'mage fmt update' then review and commit the changes. "+
+			"Run 'make fmt update' then review and commit the changes. "+
 			"Modified: %v", changes)
 	}
 	return nil
 }
 
-func Fmt() {
-	mg.Deps(mage.Format)
+// PythonEnv ensures the Python venv is up-to-date with the beats requrements.txt.
+func PythonEnv() error {
+	_, err := mage.PythonVirtualenv()
+	return err
+}
+
+// PythonAutopep8 executes autopep8 on all .py files.
+func PythonAutopep8() error {
+	return mage.PythonAutopep8()
 }

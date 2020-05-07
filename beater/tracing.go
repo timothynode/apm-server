@@ -29,8 +29,8 @@ import (
 	"go.elastic.co/apm"
 	"go.elastic.co/apm/transport"
 
-	"github.com/elastic/beats/libbeat/beat"
-	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/logp"
 
 	"github.com/elastic/apm-server/beater/api"
 	"github.com/elastic/apm-server/beater/config"
@@ -82,7 +82,11 @@ func initTracer(info beat.Info, cfg *config.Config, logger *logp.Logger) (*apm.T
 			return nil, nil, err
 		}
 		t.SetServerURL(cfg.SelfInstrumentation.Hosts...)
-		t.SetSecretToken(cfg.SelfInstrumentation.SecretToken)
+		if cfg.SelfInstrumentation.APIKey != "" {
+			t.SetAPIKey(cfg.SelfInstrumentation.APIKey)
+		} else {
+			t.SetSecretToken(cfg.SelfInstrumentation.SecretToken)
+		}
 		tracerTransport = t
 		logger.Infof("self instrumentation directed to %s", cfg.SelfInstrumentation.Hosts)
 	} else {
@@ -165,7 +169,10 @@ func (s *tracerServer) serve(report publish.Reporter) error {
 		return err
 	}
 	s.server.Handler = mux
-	return s.server.Serve(s.listener)
+	if err := s.server.Serve(s.listener); err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 func (s *tracerServer) stop() {

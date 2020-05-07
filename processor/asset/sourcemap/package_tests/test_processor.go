@@ -18,12 +18,13 @@
 package package_tests
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/elastic/apm-server/processor/asset"
 	"github.com/elastic/apm-server/tests/loader"
 	"github.com/elastic/apm-server/transform"
-	"github.com/elastic/beats/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/beat"
 )
 
 type TestProcessor struct {
@@ -35,7 +36,7 @@ func (p *TestProcessor) LoadPayload(path string) (interface{}, error) {
 }
 
 func (p *TestProcessor) Decode(input interface{}) error {
-	_, _, err := p.Processor.Decode(input.(map[string]interface{}))
+	_, err := p.Processor.Decode(input.(map[string]interface{}))
 	return err
 }
 
@@ -54,14 +55,14 @@ func (p *TestProcessor) Process(buf []byte) ([]beat.Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	metadata, transformables, err := p.Processor.Decode(pl)
+	transformables, err := p.Processor.Decode(pl)
 	if err != nil {
 		return nil, err
 	}
 
 	var events []beat.Event
 	for _, transformable := range transformables {
-		events = append(events, transformable.Transform(&transform.Context{Metadata: *metadata})...)
+		events = append(events, transformable.Transform(context.Background(), &transform.Context{})...)
 	}
 	return events, nil
 }

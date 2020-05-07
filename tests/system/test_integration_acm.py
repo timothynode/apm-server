@@ -1,59 +1,30 @@
 import time
-import unittest
-from urlparse import urljoin
+from urllib.parse import urljoin
 import uuid
-
 import requests
 
 from apmserver import ElasticTest, integration_test
 
 
 class AgentConfigurationTest(ElasticTest):
-    config_overrides = {
-        "logging_json": "true",
-        "kibana_enabled": "true",
-        "acm_cache_expiration": "1s",
-    }
 
     def config(self):
-        cfg = super(ElasticTest, self).config()
+        cfg = super(AgentConfigurationTest, self).config()
         cfg.update({
             "kibana_host": self.get_kibana_url(),
+            "logging_json": "true",
+            "kibana_enabled": "true",
+            "acm_cache_expiration": "1s"
         })
         cfg.update(self.config_overrides)
         return cfg
 
-    def _upsert_service_config(self, settings, name, agent="python", env=None, _id="new"):
-        data = {
-            "agent_name": agent,
-            "service": {"name": name},
-            "settings": settings
-        }
-        if env is not None:
-            data["service"]["environment"] = env
-
-        method = requests.post if _id == "new" else requests.put
-        return method(
-            urljoin(self.kibana_url, "/api/apm/settings/agent-configuration/{}".format(_id)),
-            headers={
-                "Accept": "*/*",
-                "Content-Type": "application/json",
-                "kbn-xsrf": "1",
-            },
-            json=data,
-        )
-
     def create_service_config(self, settings, name, agent="python", env=None):
-        config = self._upsert_service_config(settings, name, agent=agent, env=env)
-        config.raise_for_status()
-        assert config.status_code == 200, config.status_code
-        assert config.json()["result"] == "created"
-        return config.json()["_id"]
+        return self.kibana.create_agent_config(name, settings, agent=agent, env=env)
 
-    def update_service_config(self, config_id, settings, name, env=None):
-        config = self._upsert_service_config(settings, name, env=env, _id=config_id)
-        assert config.status_code == 200, config.status_code
-        assert config.json()["result"] == "updated"
+    def update_service_config(self, settings, name, env=None):
+        res = self.kibana.create_or_update_agent_config(name, settings, env=env)
+        assert res.json()["result"] == "updated"
 
 
 @integration_test
@@ -90,7 +61,7 @@ class AgentConfigurationIntegrationTest(AgentConfigurationTest):
         })
         self.assertDictEqual({}, r2.json())
 
-        self.create_service_config({"transaction_sample_rate": 0.05}, service_name)
+        self.create_service_config({"transaction_sample_rate": "0.05"}, service_name)
 
         # yes configuration for service
         r3 = requests.get(self.agent_config_url,
@@ -119,8 +90,8 @@ class AgentConfigurationIntegrationTest(AgentConfigurationTest):
             "response_code": 304,
         })
 
-        config_id = self.create_service_config(
-            {"transaction_sample_rate": 0.15}, service_name, env=service_env)
+        self.create_service_config(
+            {"transaction_sample_rate": "0.15"}, service_name, env=service_env)
 
         # yes configuration for service+environment
         r4 = requests.get(self.agent_config_url,
@@ -155,7 +126,7 @@ class AgentConfigurationIntegrationTest(AgentConfigurationTest):
         })
 
         self.update_service_config(
-            config_id, {"transaction_sample_rate": 0.99}, service_name, env=service_env)
+            {"transaction_sample_rate": "0.99"}, service_name, env=service_env)
 
         # TODO (gr): remove when cache can be disabled via config
         # wait for cache to purge
@@ -277,7 +248,7 @@ class RumAgentConfigurationIntegrationTest(AgentConfigurationTest):
 
     def test_rum(self):
         service_name = "rum-service"
-        self.create_service_config({"transaction_sample_rate": 0.2}, service_name, agent="rum-js")
+        self.create_service_config({"transaction_sample_rate": "0.2"}, service_name, agent="rum-js")
 
         r1 = requests.get(self.rum_agent_config_url,
                           params={"service.name": service_name},
@@ -294,7 +265,7 @@ class RumAgentConfigurationIntegrationTest(AgentConfigurationTest):
 
     def test_rum_current_name(self):
         service_name = "rum-service"
-        self.create_service_config({"transaction_sample_rate": 0.2}, service_name, agent="js-base")
+        self.create_service_config({"transaction_sample_rate": "0.2"}, service_name, agent="js-base")
 
         r1 = requests.get(self.rum_agent_config_url,
                           params={"service.name": service_name},
@@ -311,7 +282,7 @@ class RumAgentConfigurationIntegrationTest(AgentConfigurationTest):
 
     def test_backend_after_rum(self):
         service_name = "backend-service"
-        self.create_service_config({"transaction_sample_rate": 0.3}, service_name)
+        self.create_service_config({"transaction_sample_rate": "0.3"}, service_name)
 
         r1 = requests.get(self.rum_agent_config_url,
                           params={"service.name": service_name},
@@ -329,7 +300,7 @@ class RumAgentConfigurationIntegrationTest(AgentConfigurationTest):
 
     def test_rum_after_backend(self):
         service_name = "backend-service"
-        self.create_service_config({"transaction_sample_rate": 0.3}, service_name)
+        self.create_service_config({"transaction_sample_rate": "0.3"}, service_name)
 
         r1 = requests.get(self.agent_config_url,
                           params={"service.name": service_name},
@@ -348,7 +319,7 @@ class RumAgentConfigurationIntegrationTest(AgentConfigurationTest):
     def test_all_agents(self):
         service_name = "any-service"
         self.create_service_config(
-            {"transaction_sample_rate": 0.4, "capture_body": "all"}, service_name, agent="")
+            {"transaction_sample_rate": "0.4", "capture_body": "all"}, service_name, agent="")
 
         r1 = requests.get(self.rum_agent_config_url,
                           params={"service.name": service_name},

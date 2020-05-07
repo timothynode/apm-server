@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/elastic/beats/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/common"
 )
 
 type ManualDecoder struct {
@@ -253,9 +253,10 @@ func (d *ManualDecoder) TimeEpochMicro(base map[string]interface{}, key string, 
 	return time.Time{}
 }
 
-func (d *ManualDecoder) Headers(base map[string]interface{}) http.Header {
-	h := d.MapStr(base, "headers")
-	if d.Err != nil {
+func (d *ManualDecoder) Headers(base map[string]interface{}, fieldName string) http.Header {
+
+	h := d.MapStr(base, fieldName)
+	if d.Err != nil || len(h) == 0 {
 		return nil
 	}
 	httpHeader := http.Header{}

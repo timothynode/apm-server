@@ -34,10 +34,8 @@ const (
 )
 
 var (
-	// RumAgent keywords (new and old)
-	RumAgent = []string{"rum-js", "js-base"}
-	// RumSettings are whitelisted applicable settings for RUM
-	RumSettings = []string{"transaction_sample_rate"}
+	// WhitelistedSettings are settings considered safe to be returned to all requesters, including unauthenticated ones such as RUM.
+	WhitelistedSettings = []string{"transaction_sample_rate"}
 )
 
 // Result models a Kibana response
@@ -55,17 +53,32 @@ type Source struct {
 // Query represents an URL body or query params for agent configuration
 type Query struct {
 	Service Service `json:"service"`
-	Etag    string  `json:"etag"`
-	IsRum   bool    `json:"-"`
+
+	// Etag should be set to the Etag of a previous agent config query result.
+	// When the query is processed by the receiver a new Etag is calculated
+	// for the query result. If Etags from the query and the query result match,
+	// it indicates that the exact same query response has already been delivered.
+	Etag string `json:"etag"`
+
+	// MarkAsAppliedByAgent can be used to signal to the receiver that the response to this
+	// query can be considered to have been applied immediately. When building queries for Elastic APM
+	// agent requests the Etag should be set, instead of the AppliedByAgent setting.
+	// Use this flag when building queries for third party integrations,
+	// such as Jaeger, that do not send an Etag in their request.
+	MarkAsAppliedByAgent *bool `json:"mark_as_applied_by_agent,omitempty"`
+
+	// InsecureAgents holds a set of prefixes for restricting results to those whose
+	// agent name matches any of the specified prefixes.
+	//
+	// If InsecureAgents is non-empty, and any of the prefixes matches the result,
+	// then the resulting settings will be restricted to those identified by
+	// WhitelistedSettings. Otherwise, if InsecureAgents is empty, the agent name
+	// is ignored and no restrictions are applied.
+	InsecureAgents []string `json:"-"`
 }
 
 func (q Query) id() string {
 	return q.Service.Name + q.Service.Environment
-}
-
-// NewQuery creates a Query struct
-func NewQuery(name, env string) Query {
-	return Query{Service: Service{name, env}}
 }
 
 // Service holds supported attributes for querying configuration

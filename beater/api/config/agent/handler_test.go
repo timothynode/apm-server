@@ -18,6 +18,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -27,17 +28,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/elastic/apm-server/agentcfg"
-
-	"golang.org/x/time/rate"
-
-	"github.com/elastic/apm-server/beater/authorization"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.elastic.co/apm/apmtest"
+	"golang.org/x/time/rate"
 
-	"github.com/elastic/beats/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/common"
+	libkibana "github.com/elastic/beats/v7/libbeat/kibana"
 
+	"github.com/elastic/apm-server/agentcfg"
+	"github.com/elastic/apm-server/beater/authorization"
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/beater/headers"
 	"github.com/elastic/apm-server/beater/request"
@@ -160,6 +160,18 @@ var (
 			respBody:               map[string]string{"error": msgMethodUnsupported},
 			respBodyToken:          map[string]string{"error": fmt.Sprintf("%s: PUT", msgMethodUnsupported)},
 		},
+
+		"Unauthorized": {
+			kbClient:               tests.MockKibana(http.StatusUnauthorized, m{"error": "Unauthorized"}, mockVersion, true),
+			method:                 http.MethodGet,
+			queryParams:            map[string]string{"service.name": "opbeans-node"},
+			respStatus:             http.StatusServiceUnavailable,
+			respCacheControlHeader: "max-age=300, must-revalidate",
+			respBody:               map[string]string{"error": agentcfg.ErrUnauthorized},
+			respBodyToken: map[string]string{"error": "APM Server is not authorized to query Kibana. " +
+				"Please configure apm-server.kibana.username and apm-server.kibana.password, " +
+				"and ensure the user has the necessary privileges."},
+		},
 	}
 )
 
@@ -175,7 +187,7 @@ func TestAgentConfigHandler(t *testing.T) {
 			for k, v := range tc.requestHeader {
 				r.Header.Set(k, v)
 			}
-			ctx := &request.Context{}
+			ctx := request.NewContext()
 			ctx.Reset(w, r)
 			ctx.Authorization = auth
 			h(ctx)
@@ -205,7 +217,7 @@ func TestAgentConfigHandler_NoKibanaClient(t *testing.T) {
 	h := Handler(nil, &cfg)
 
 	w := httptest.NewRecorder()
-	ctx := &request.Context{}
+	ctx := request.NewContext()
 	ctx.Reset(w, httptest.NewRequest(http.MethodGet, "/config", nil))
 	h(ctx)
 
@@ -229,7 +241,7 @@ func TestAgentConfigHandler_PostOk(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/config", convert.ToReader(m{
 		"service": m{"name": "opbeans-node"}}))
-	ctx := &request.Context{}
+	ctx := request.NewContext()
 	ctx.Reset(w, r)
 	h(ctx)
 
@@ -241,7 +253,7 @@ func TestAgentConfigRum(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/rum", convert.ToReader(m{
 		"service": m{"name": "opbeans"}}))
-	ctx := &request.Context{}
+	ctx := request.NewContext()
 	ctx.Reset(w, r)
 	ctx.IsRum = true
 	h(ctx)
@@ -256,7 +268,7 @@ func TestAgentConfigRumEtag(t *testing.T) {
 	h := getHandler("rum-js")
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/rum?ifnonematch=123&service.name=opbeans", nil)
-	ctx := &request.Context{}
+	ctx := request.NewContext()
 	ctx.Reset(w, r)
 	ctx.IsRum = true
 	h(ctx)
@@ -268,7 +280,7 @@ func TestAgentConfigNotRum(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/backend", convert.ToReader(m{
 		"service": m{"name": "opbeans"}}))
-	ctx := &request.Context{}
+	ctx := request.NewContext()
 	ctx.Reset(w, r)
 	h(ctx)
 	var actual map[string]string
@@ -282,7 +294,7 @@ func TestAgentConfigNoLeak(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/rum", convert.ToReader(m{
 		"service": m{"name": "opbeans"}}))
-	ctx := &request.Context{}
+	ctx := request.NewContext()
 	ctx.Reset(w, r)
 	ctx.IsRum = true
 	h(ctx)
@@ -297,7 +309,7 @@ func TestAgentConfigRateLimit(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/rum", convert.ToReader(m{
 		"service": m{"name": "opbeans"}}))
-	ctx := &request.Context{}
+	ctx := request.NewContext()
 	ctx.Reset(w, r)
 	ctx.IsRum = true
 	ctx.RateLimiter = rate.NewLimiter(rate.Limit(0), 0)
@@ -340,6 +352,26 @@ func TestIfNoneMatch(t *testing.T) {
 	assert.Equal(t, "123", ifNoneMatch(fromHeader("123")))
 	assert.Equal(t, "123", ifNoneMatch(fromHeader(`"123"`)))
 	assert.Equal(t, "123", ifNoneMatch(fromQueryArg("123")))
+}
+
+func TestAgentConfigTraceContext(t *testing.T) {
+	kibanaCfg := libkibana.DefaultClientConfig()
+	kibanaCfg.Host = "testKibana:12345"
+	client := kibana.NewConnectingClient(&kibanaCfg)
+	handler := Handler(client, &config.AgentConfig{Cache: &config.Cache{Expiration: 5 * time.Minute}})
+	_, spans, _ := apmtest.WithTransaction(func(ctx context.Context) {
+		// When the handler is called with a context containing
+		// a transaction, the underlying Kibana query should create a span
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/backend", convert.ToReader(m{
+			"service": m{"name": "opbeans"}}))
+		r = r.WithContext(ctx)
+		c := request.NewContext()
+		c.Reset(w, r)
+		handler(c)
+	})
+	require.Len(t, spans, 1)
+	assert.Equal(t, "app", spans[0].Type)
 }
 
 func target(params map[string]string) string {

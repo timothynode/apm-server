@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 from __future__ import print_function
 import os
@@ -15,7 +15,7 @@ def is_dir(d):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-t', '--target_dir', type=is_dir, default='docs/copied-from-beats')
-    parser.add_argument('-s', '--source_dir', type=is_dir, default='../beats/libbeat/docs')
+    parser.add_argument('-s', '--source_dir', type=is_dir, default='../beats/libbeat')
     args = parser.parse_args()
 
     start = len(args.target_dir.strip("/"))+1

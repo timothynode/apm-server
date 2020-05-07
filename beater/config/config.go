@@ -20,13 +20,15 @@ package config
 import (
 	"net"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/common/transport/tlscommon"
-	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/common/transport/tlscommon"
+	"github.com/elastic/beats/v7/libbeat/kibana"
+	"github.com/elastic/beats/v7/libbeat/logp"
 
 	logs "github.com/elastic/apm-server/log"
 )
@@ -41,6 +43,28 @@ const (
 var (
 	regexObserverVersion = regexp.MustCompile("%.*{.*observer.version.?}")
 )
+
+type KibanaConfig struct {
+	Enabled             bool `config:"enabled"`
+	kibana.ClientConfig `config:",inline"`
+}
+
+func (k *KibanaConfig) Unpack(cfg *common.Config) error {
+	if err := cfg.Unpack(&k.ClientConfig); err != nil {
+		return err
+	}
+	k.Enabled = cfg.Enabled()
+	k.Host = strings.TrimRight(k.Host, "/")
+
+	return nil
+}
+
+func defaultKibanaConfig() KibanaConfig {
+	return KibanaConfig{
+		Enabled:      false,
+		ClientConfig: kibana.DefaultClientConfig(),
+	}
+}
 
 // Config holds configuration information nested under the key `apm-server`
 type Config struct {
@@ -59,11 +83,13 @@ type Config struct {
 	RumConfig           *RumConfig              `config:"rum"`
 	Register            *RegisterConfig         `config:"register"`
 	Mode                Mode                    `config:"mode"`
-	Kibana              *common.Config          `config:"kibana"`
+	Kibana              KibanaConfig            `config:"kibana"`
 	AgentConfig         *AgentConfig            `config:"agent.config"`
-
-	SecretToken  string        `config:"secret_token"`
-	APIKeyConfig *APIKeyConfig `config:"api_key"`
+	SecretToken         string                  `config:"secret_token"`
+	APIKeyConfig        *APIKeyConfig           `config:"api_key"`
+	JaegerConfig        JaegerConfig            `config:"jaeger"`
+	Aggregation         AggregationConfig       `config:"aggregation"`
+	Sampling            SamplingConfig          `config:"sampling"`
 
 	Pipeline string
 }
@@ -88,19 +114,6 @@ type Cache struct {
 func NewConfig(version string, ucfg *common.Config, outputESCfg *common.Config) (*Config, error) {
 	logger := logp.NewLogger(logs.Config)
 	c := DefaultConfig(version)
-
-	if ucfg.HasField("ssl") {
-		ssl, err := ucfg.Child("ssl", -1)
-		if err != nil {
-			return nil, err
-		}
-		if !ssl.HasField("certificate_authorities") && !ssl.HasField("client_authentication") {
-			if err := ucfg.SetString("ssl.client_authentication", -1, "optional"); err != nil {
-				return nil, err
-			}
-		}
-	}
-
 	if err := ucfg.Unpack(c); err != nil {
 		return nil, errors.Wrap(err, "Error processing configuration")
 	}
@@ -125,6 +138,22 @@ func NewConfig(version string, ucfg *common.Config, outputESCfg *common.Config) 
 		return nil, err
 	}
 
+	if err := c.JaegerConfig.setup(c); err != nil {
+		return nil, err
+	}
+
+	if !c.Sampling.KeepUnsampled && !c.Aggregation.Enabled {
+		// Unsampled transactions should only be dropped
+		// when transaction aggregation is enabled in the
+		// server. This means the aggregations performed
+		// by the APM UI will not have access to a complete
+		// representation of the latency distribution.
+		logger.Warn("" +
+			"apm-server.sampling.keep_unsampled and " +
+			"apm-server.aggregation.enabled are both false, " +
+			"which will lead to incorrect metrics being reported in the APM UI",
+		)
+	}
 	return c, nil
 }
 
@@ -152,9 +181,12 @@ func DefaultConfig(beatVersion string) *Config {
 		RumConfig:    defaultRum(beatVersion),
 		Register:     defaultRegisterConfig(true),
 		Mode:         ModeProduction,
-		Kibana:       common.MustNewConfigFrom(map[string]interface{}{"enabled": "false"}),
+		Kibana:       defaultKibanaConfig(),
 		AgentConfig:  &AgentConfig{Cache: &Cache{Expiration: 30 * time.Second}},
 		Pipeline:     defaultAPMPipeline,
 		APIKeyConfig: defaultAPIKeyConfig(),
+		JaegerConfig: defaultJaeger(),
+		Aggregation:  defaultAggregationConfig(),
+		Sampling:     defaultSamplingConfig(),
 	}
 }

@@ -18,15 +18,9 @@
 package model
 
 import (
-	"errors"
-	"net"
 	"net/http"
-	"strconv"
-	"strings"
 
-	"github.com/elastic/apm-server/model/metadata"
-
-	"github.com/elastic/beats/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/common"
 
 	"github.com/elastic/apm-server/utility"
 )
@@ -38,9 +32,7 @@ type Context struct {
 	Labels       *Labels
 	Page         *Page
 	Custom       *Custom
-	User         *metadata.User
-	Service      *metadata.Service
-	Client       *Client
+	Message      *Message
 	Experimental interface{}
 }
 
@@ -70,6 +62,9 @@ type Page struct {
 }
 
 // Labels holds user defined information nested under key tags
+//
+// TODO(axw) either get rid of this type, or use it consistently
+// in all model types (looking at you, Metadata).
 type Labels common.MapStr
 
 // Custom holds user defined information nested under key custom
@@ -94,62 +89,16 @@ type Socket struct {
 // Resp bundles information related to an http requests response
 type Resp struct {
 	Finished    *bool
-	StatusCode  *int
 	HeadersSent *bool
-	Headers     http.Header
+	MinimalResp
 }
 
-// Client holds information about the client.ip of the event.
-type Client struct {
-	IP net.IP
-}
-
-// DecodeContext parses all information from input, nested under key context and returns an instance of Context.
-func DecodeContext(input interface{}, cfg Config, err error) (*Context, error) {
-	if input == nil || err != nil {
-		return nil, err
-	}
-	raw, ok := input.(map[string]interface{})
-	if !ok {
-		return nil, errors.New("invalid type for fetching Context out")
-	}
-
-	decoder := utility.ManualDecoder{}
-	ctxInp := decoder.MapStr(raw, "context")
-	if ctxInp == nil {
-		return &Context{}, decoder.Err
-	}
-
-	userInp := decoder.Interface(ctxInp, "user")
-	serviceInp := decoder.Interface(ctxInp, "service")
-	var experimental interface{}
-	if cfg.Experimental {
-		experimental = decoder.Interface(ctxInp, "experimental")
-	}
-	http, err := decodeHttp(ctxInp, decoder.Err)
-	url, err := decodeUrl(ctxInp, err)
-	labels, err := decodeLabels(ctxInp, err)
-	custom, err := decodeCustom(ctxInp, err)
-	page, err := decodePage(ctxInp, err)
-	service, err := metadata.DecodeService(serviceInp, err)
-	user, err := metadata.DecodeUser(userInp, err)
-	user = addUserAgent(user, http)
-	client, err := decodeClient(user, http, err)
-
-	ctx := Context{
-		Http:         http,
-		Url:          url,
-		Labels:       labels,
-		Page:         page,
-		Custom:       custom,
-		User:         user,
-		Service:      service,
-		Client:       client,
-		Experimental: experimental,
-	}
-
-	return &ctx, err
-
+type MinimalResp struct {
+	StatusCode      *int
+	Headers         http.Header
+	TransferSize    *float64
+	EncodedBodySize *float64
+	DecodedBodySize *float64
 }
 
 // Fields returns common.MapStr holding transformed data for attribute url.
@@ -218,161 +167,6 @@ func (custom *Custom) Fields() common.MapStr {
 	return common.MapStr(*custom)
 }
 
-// Fields returns common.MapStr holding transformed data for attribute client.
-func (c *Client) Fields() common.MapStr {
-	if c == nil || c.IP == nil {
-		return nil
-	}
-	return common.MapStr{"ip": c.IP.String()}
-}
-
-func addUserAgent(user *metadata.User, h *Http) *metadata.User {
-	if ua := h.UserAgent(); ua != "" {
-		if user == nil {
-			user = &metadata.User{}
-		}
-		user.UserAgent = &ua
-	}
-	return user
-}
-
-func decodeUrl(raw common.MapStr, err error) (*Url, error) {
-	if err != nil {
-		return nil, err
-	}
-
-	decoder := utility.ManualDecoder{}
-	req := decoder.MapStr(raw, "request")
-	if req == nil {
-		return nil, decoder.Err
-	}
-
-	inpUrl := decoder.MapStr(req, "url")
-	url := Url{
-		Original: decoder.StringPtr(inpUrl, "raw"),
-		Full:     decoder.StringPtr(inpUrl, "full"),
-		Domain:   decoder.StringPtr(inpUrl, "hostname"),
-		Path:     decoder.StringPtr(inpUrl, "pathname"),
-		Query:    decoder.StringPtr(inpUrl, "search"),
-		Fragment: decoder.StringPtr(inpUrl, "hash"),
-	}
-	if scheme := decoder.StringPtr(inpUrl, "protocol"); scheme != nil {
-		trimmed := strings.TrimSuffix(*scheme, ":")
-		url.Scheme = &trimmed
-	}
-	err = decoder.Err
-	if url.Port = decoder.IntPtr(inpUrl, "port"); url.Port != nil {
-		return &url, nil
-	} else if portStr := decoder.StringPtr(inpUrl, "port"); portStr != nil {
-		var p int
-		if p, err = strconv.Atoi(*portStr); err == nil {
-			url.Port = &p
-		}
-	}
-
-	return &url, err
-}
-
-func decodeClient(user *metadata.User, http *Http, err error) (*Client, error) {
-	if err != nil {
-		return nil, err
-	}
-	// user.IP is only set for RUM events
-	if user != nil && user.IP != nil {
-		return &Client{IP: user.IP}, nil
-	}
-	// http.Request.Headers and http.Request.Socket information is only set for backend events
-	// try to first extract an IP address from the headers, if not possible use IP address from socket remote_address
-	if http != nil && http.Request != nil {
-		if ip := utility.ExtractIPFromHeader(http.Request.Headers); ip != nil {
-			return &Client{IP: ip}, nil
-		}
-		if http.Request.Socket != nil && http.Request.Socket.RemoteAddress != nil {
-			return &Client{IP: utility.ParseIP(*http.Request.Socket.RemoteAddress)}, nil
-		}
-	}
-	return nil, nil
-}
-
-func decodeHttp(raw common.MapStr, err error) (*Http, error) {
-	if err != nil {
-		return nil, err
-	}
-	var h *Http
-	decoder := utility.ManualDecoder{}
-	inpReq := decoder.MapStr(raw, "request")
-	if inpReq != nil {
-		h = &Http{
-			Version: decoder.StringPtr(inpReq, "http_version"),
-			Request: &Req{
-				Method: strings.ToLower(decoder.String(inpReq, "method")),
-				Env:    decoder.Interface(inpReq, "env"),
-				Socket: &Socket{
-					RemoteAddress: decoder.StringPtr(inpReq, "remote_address", "socket"),
-					Encrypted:     decoder.BoolPtr(inpReq, "encrypted", "socket"),
-				},
-				Body:    decoder.Interface(inpReq, "body"),
-				Cookies: decoder.Interface(inpReq, "cookies"),
-				Headers: decoder.Headers(inpReq),
-			},
-		}
-	}
-
-	inpResp := decoder.MapStr(raw, "response")
-	if inpResp != nil {
-		if h == nil {
-			h = &Http{}
-		}
-		headers := decoder.Headers(inpResp)
-		h.Response = &Resp{
-			Finished:    decoder.BoolPtr(inpResp, "finished"),
-			StatusCode:  decoder.IntPtr(inpResp, "status_code"),
-			HeadersSent: decoder.BoolPtr(inpResp, "headers_sent"),
-			Headers:     headers,
-		}
-	}
-	return h, decoder.Err
-}
-
-func decodePage(raw common.MapStr, err error) (*Page, error) {
-	if err != nil {
-		return nil, err
-	}
-	pageInput, ok := raw["page"].(map[string]interface{})
-	if !ok {
-		return nil, nil
-	}
-	decoder := utility.ManualDecoder{}
-	return &Page{
-		Url:     decoder.StringPtr(pageInput, "url"),
-		Referer: decoder.StringPtr(pageInput, "referer"),
-	}, decoder.Err
-}
-
-func decodeLabels(raw common.MapStr, err error) (*Labels, error) {
-	if err != nil {
-		return nil, err
-	}
-	decoder := utility.ManualDecoder{}
-	if l := decoder.MapStr(raw, "tags"); decoder.Err == nil && l != nil {
-		labels := Labels(l)
-		return &labels, nil
-	}
-	return nil, decoder.Err
-}
-
-func decodeCustom(raw common.MapStr, err error) (*Custom, error) {
-	if err != nil {
-		return nil, err
-	}
-	decoder := utility.ManualDecoder{}
-	if c := decoder.MapStr(raw, "custom"); decoder.Err == nil && c != nil {
-		custom := Custom(c)
-		return &custom, nil
-	}
-	return nil, decoder.Err
-}
-
 func (req *Req) fields() common.MapStr {
 	if req == nil {
 		return nil
@@ -392,11 +186,25 @@ func (resp *Resp) fields() common.MapStr {
 	if resp == nil {
 		return nil
 	}
-	fields := common.MapStr{}
-	utility.Set(fields, "headers", headerToFields(resp.Headers))
+	fields := resp.MinimalResp.Fields()
+	if fields == nil {
+		fields = common.MapStr{}
+	}
 	utility.Set(fields, "headers_sent", resp.HeadersSent)
 	utility.Set(fields, "finished", resp.Finished)
-	utility.Set(fields, "status_code", resp.StatusCode)
+	return fields
+}
+
+func (m *MinimalResp) Fields() common.MapStr {
+	if m == nil {
+		return nil
+	}
+	fields := common.MapStr{}
+	utility.Set(fields, "headers", headerToFields(m.Headers))
+	utility.Set(fields, "status_code", m.StatusCode)
+	utility.Set(fields, "transfer_size", m.TransferSize)
+	utility.Set(fields, "encoded_body_size", m.EncodedBodySize)
+	utility.Set(fields, "decoded_body_size", m.DecodedBodySize)
 	return fields
 }
 

@@ -18,10 +18,10 @@
 package model
 
 import (
-	"errors"
+	"context"
 
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/logp"
 
 	logs "github.com/elastic/apm-server/log"
 
@@ -29,28 +29,12 @@ import (
 )
 
 var (
-	errInvalidStacktraceType          = errors.New("invalid type for stacktrace")
 	msgServiceInvalidForSourcemapping = "Cannot apply sourcemap without a service name or service version"
 )
 
 type Stacktrace []*StacktraceFrame
 
-func DecodeStacktrace(input interface{}, err error) (*Stacktrace, error) {
-	if input == nil || err != nil {
-		return nil, err
-	}
-	raw, ok := input.([]interface{})
-	if !ok {
-		return nil, errInvalidStacktraceType
-	}
-	st := make(Stacktrace, len(raw))
-	for idx, fr := range raw {
-		st[idx], err = DecodeStacktraceFrame(fr, err)
-	}
-	return &st, err
-}
-
-func (st *Stacktrace) Transform(tctx *transform.Context) []common.MapStr {
+func (st *Stacktrace) Transform(ctx context.Context, tctx *transform.Context, service *Service) []common.MapStr {
 	if st == nil {
 		return nil
 	}
@@ -74,7 +58,7 @@ func (st *Stacktrace) Transform(tctx *transform.Context) []common.MapStr {
 	if tctx.Config.SourcemapStore == nil {
 		return st.transform(tctx, noSourcemapping)
 	}
-	if tctx.Metadata.Service == nil || tctx.Metadata.Service.Name == nil || tctx.Metadata.Service.Version == nil {
+	if service == nil || service.Name == "" || service.Version == "" {
 		logp.NewLogger(logs.Stacktrace).Warn(msgServiceInvalidForSourcemapping)
 		return st.transform(tctx, noSourcemapping)
 	}
@@ -84,7 +68,7 @@ func (st *Stacktrace) Transform(tctx *transform.Context) []common.MapStr {
 	logger := logp.NewLogger(logs.Stacktrace)
 	fct := "<anonymous>"
 	return st.transform(tctx, func(frame *StacktraceFrame) {
-		fct, errMsg = frame.applySourcemap(tctx.Config.SourcemapStore, tctx.Metadata.Service, fct)
+		fct, errMsg = frame.applySourcemap(ctx, tctx.Config.SourcemapStore, service, fct)
 		if errMsg != "" {
 			if _, ok := sourcemapErrorSet[errMsg]; !ok {
 				logger.Warn(errMsg)

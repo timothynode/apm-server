@@ -4,17 +4,11 @@ import requests
 import threading
 import time
 import zlib
+from io import BytesIO
 
-from apmserver import ServerBaseTest, ClientSideBaseTest, CorsBaseTest, integration_test
-
-
-try:
-    from StringIO import StringIO
-except ImportError:
-    from io import StringIO
+from apmserver import ServerBaseTest, ClientSideBaseTest, CorsBaseTest
 
 
-@integration_test
 class Test(ServerBaseTest):
 
     def test_ok(self):
@@ -47,7 +41,7 @@ class Test(ServerBaseTest):
         data = self.get_event_payload(name="invalid-event.ndjson")
         r = self.request_intake(data=data)
         assert r.status_code == 400, r.status_code
-        assert "error validating JSON document against schema" in r.content, r.content
+        assert "failed to validate transaction: error validating JSON" in r.text, r.text
 
     def test_rum_default_disabled(self):
         r = self.request_intake(url='http://localhost:8200/intake/v2/rum/events')
@@ -59,8 +53,8 @@ class Test(ServerBaseTest):
         assert r.status_code == 200, r.status_code
 
     def test_gzip(self):
-        events = self.get_event_payload()
-        out = StringIO()
+        events = self.get_event_payload().encode("utf-8")
+        out = BytesIO()
 
         with gzip.GzipFile(fileobj=out, mode="w") as f:
             f.write(events)
@@ -70,7 +64,7 @@ class Test(ServerBaseTest):
         assert r.status_code == 202, r.status_code
 
     def test_deflate(self):
-        events = self.get_event_payload()
+        events = self.get_event_payload().encode("utf-8")
         compressed_data = zlib.compress(events)
 
         r = requests.post(self.intake_url, data=compressed_data,
@@ -95,7 +89,6 @@ class Test(ServerBaseTest):
         assert r.status_code == 404, r.status_code
 
 
-@integration_test
 class ClientSideTest(ClientSideBaseTest):
 
     def test_ok(self):
@@ -113,7 +106,6 @@ class ClientSideTest(ClientSideBaseTest):
         assert r.status_code == 400, r.status_code
 
 
-@integration_test
 class CorsTest(CorsBaseTest):
 
     def test_ok(self):
@@ -155,7 +147,6 @@ class CorsTest(CorsBaseTest):
             assert r.headers['Access-Control-Allow-Methods'] == 'POST, OPTIONS', r.headers
 
 
-@integration_test
 class RateLimitTest(ClientSideBaseTest):
 
     def fire_events(self, data_file, iterations, split_ips=False):

@@ -18,6 +18,7 @@
 package package_tests
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -28,7 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/elastic/apm-server/tests/loader"
-	"github.com/elastic/beats/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/beat"
 
 	"github.com/elastic/apm-server/processor/asset/sourcemap"
 	"github.com/elastic/apm-server/tests"
@@ -64,13 +65,12 @@ func TestSourcemapProcessorOK(t *testing.T) {
 		err = p.Validate(data)
 		require.NoError(t, err)
 
-		metadata, payload, err := p.Decode(data)
+		payload, err := p.Decode(data)
 		require.NoError(t, err)
 
-		tctx.Metadata = *metadata
 		var events []beat.Event
 		for _, transformable := range payload {
-			events = append(events, transformable.Transform(&tctx)...)
+			events = append(events, transformable.Transform(context.Background(), &tctx)...)
 		}
 		verifyErr := approvals.ApproveEvents(events, info.Name, "@timestamp")
 		if verifyErr != nil {

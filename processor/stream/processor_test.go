@@ -27,11 +27,14 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/elastic/apm-server/beater/config"
+	"github.com/elastic/apm-server/transform"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
 
-	"github.com/elastic/beats/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/beat"
 
 	"github.com/elastic/apm-server/publish"
 	"github.com/elastic/apm-server/tests"
@@ -56,7 +59,7 @@ func TestHandlerReadStreamError(t *testing.T) {
 	bodyReader := bytes.NewBuffer(b)
 	timeoutReader := iotest.TimeoutReader(bodyReader)
 
-	sp := Processor{MaxEventSize: 100 * 1024}
+	sp := BackendProcessor(&config.Config{MaxEventSize: 100 * 1024})
 	actualResult := sp.HandleStream(context.Background(), nil, map[string]interface{}{}, timeoutReader, report)
 	assertApproveResult(t, actualResult, "ReadError")
 }
@@ -83,7 +86,7 @@ func TestHandlerReportingStreamError(t *testing.T) {
 		require.NoError(t, err)
 		bodyReader := bytes.NewBuffer(b)
 
-		sp := Processor{MaxEventSize: 100 * 1024}
+		sp := BackendProcessor(&config.Config{MaxEventSize: 100 * 1024})
 		actualResult := sp.HandleStream(context.Background(), nil, map[string]interface{}{}, bodyReader, test.report)
 		assertApproveResult(t, actualResult, test.name)
 	}
@@ -93,7 +96,7 @@ func TestIntegrationESOutput(t *testing.T) {
 	report := func(ctx context.Context, p publish.PendingReq) error {
 		var events []beat.Event
 		for _, transformable := range p.Transformables {
-			events = append(events, transformable.Transform(p.Tcontext)...)
+			events = append(events, transformable.Transform(ctx, p.Tcontext)...)
 		}
 		name := ctx.Value("name").(string)
 		verifyErr := approvals.ApproveEvents(events, name)
@@ -138,7 +141,8 @@ func TestIntegrationESOutput(t *testing.T) {
 				},
 			}
 
-			actualResult := (&Processor{MaxEventSize: 100 * 1024}).HandleStream(ctx, nil, reqDecoderMeta, bodyReader, report)
+			p := BackendProcessor(&config.Config{MaxEventSize: 100 * 1024})
+			actualResult := p.HandleStream(ctx, nil, reqDecoderMeta, bodyReader, report)
 			assertApproveResult(t, actualResult, test.name)
 		})
 	}
@@ -148,7 +152,7 @@ func TestIntegrationRum(t *testing.T) {
 	report := func(ctx context.Context, p publish.PendingReq) error {
 		var events []beat.Event
 		for _, transformable := range p.Transformables {
-			events = append(events, transformable.Transform(p.Tcontext)...)
+			events = append(events, transformable.Transform(ctx, p.Tcontext)...)
 		}
 		name := ctx.Value("name").(string)
 		verifyErr := approvals.ApproveEvents(events, name)
@@ -182,8 +186,57 @@ func TestIntegrationRum(t *testing.T) {
 				},
 			}
 
-			actualResult := (&Processor{MaxEventSize: 100 * 1024}).HandleStream(ctx, nil, reqDecoderMeta, bodyReader, report)
+			p := RUMProcessor(&config.Config{MaxEventSize: 100 * 1024}, &transform.Config{})
+			actualResult := p.HandleStream(ctx, nil, reqDecoderMeta, bodyReader, report)
 			assertApproveResult(t, actualResult, test.name)
+		})
+	}
+}
+
+func TestRUMV3(t *testing.T) {
+
+	var resultEvents []beat.Event
+	reporter := func(name string) publish.Reporter {
+		return func(ctx context.Context, p publish.PendingReq) error {
+			for _, transformable := range p.Transformables {
+				resultEvents = append(resultEvents, transformable.Transform(ctx, p.Tcontext)...)
+			}
+			return nil
+		}
+	}
+
+	for _, test := range []struct {
+		path string
+		name string
+	}{
+		{path: "rum_errors.ndjson", name: "RUMV3Errors"},
+		{path: "rum_events.ndjson", name: "RUMV3Events"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			b, err := loader.LoadDataAsBytes(filepath.Join("../testdata/intake-v3/", test.path))
+			require.NoError(t, err)
+			bodyReader := bytes.NewBuffer(b)
+
+			name := fmt.Sprintf("test_approved_es_documents/testIntake%s", test.name)
+			reqTimestamp := time.Date(2018, 8, 1, 10, 0, 0, 0, time.UTC)
+			ctx := utility.ContextWithRequestTime(context.Background(), reqTimestamp)
+
+			reqDecoderMeta := map[string]interface{}{
+				"user": map[string]interface{}{
+					"user-agent": "rum-2.0",
+					"ip":         "192.0.0.1",
+				},
+			}
+
+			p := RUMV3Processor(&config.Config{MaxEventSize: 100 * 1024}, &transform.Config{})
+			actualResult := p.HandleStream(ctx, nil, reqDecoderMeta, bodyReader, reporter(name))
+			assertApproveResult(t, actualResult, test.name)
+
+			verifyErr := approvals.ApproveEvents(resultEvents, name)
+			if verifyErr != nil {
+				assert.Fail(t, fmt.Sprintf("Test %s failed with error: %s", name, verifyErr.Error()))
+			}
+			resultEvents = []beat.Event{}
 		})
 	}
 }
@@ -211,7 +264,7 @@ func TestRateLimiting(t *testing.T) {
 			assert.True(t, test.lim.AllowN(time.Now(), test.hit))
 		}
 
-		actualResult := (&Processor{MaxEventSize: 100 * 1024}).HandleStream(
+		actualResult := BackendProcessor(&config.Config{MaxEventSize: 100 * 1024}).HandleStream(
 			context.Background(), test.lim, map[string]interface{}{}, bytes.NewReader(b), report)
 		assertApproveResult(t, actualResult, test.name)
 	}

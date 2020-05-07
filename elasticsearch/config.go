@@ -25,9 +25,9 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/common/transport/tlscommon"
-	"github.com/elastic/beats/libbeat/outputs/transport"
+	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/common/transport"
+	"github.com/elastic/beats/v7/libbeat/common/transport/tlscommon"
 )
 
 const (
@@ -72,22 +72,16 @@ func (h Hosts) Validate() error {
 	return nil
 }
 
-func connectionConfig(config *Config) (*http.Transport, []string, error) {
-	var dial, tlsDial transport.Dialer
-	var addrs []string
-	proxy, err := httpProxyURL(config)
-	if err == nil {
-		addrs, err = addresses(config)
+func connectionConfig(config *Config) (http.RoundTripper, []string, error) {
+	addrs, err := addresses(config)
+	if err != nil {
+		return nil, nil, err
 	}
-	if err == nil {
-		dial, tlsDial, err = dialer(config)
+	transp, err := httpTransport(config)
+	if err != nil {
+		return nil, nil, err
 	}
-	transport := &http.Transport{
-		Proxy:   proxy,
-		Dial:    dial.Dial,
-		DialTLS: tlsDial.Dial,
-	}
-	return transport, addrs, err
+	return transp, addrs, nil
 }
 
 func httpProxyURL(cfg *Config) (func(*http.Request) (*url.URL, error), error) {
@@ -122,16 +116,27 @@ func addresses(cfg *Config) ([]string, error) {
 	return addresses, nil
 }
 
-func dialer(cfg *Config) (transport.Dialer, transport.Dialer, error) {
-	var tlsConfig *tlscommon.TLSConfig
-	var err error
-	if cfg.TLS.IsEnabled() {
-		if tlsConfig, err = tlscommon.LoadTLSConfig(cfg.TLS); err != nil {
-			return nil, nil, err
-		}
+func httpTransport(cfg *Config) (*http.Transport, error) {
+	proxy, err := httpProxyURL(cfg)
+	if err != nil {
+		return nil, err
 	}
 
+	var tlsConfig *tlscommon.TLSConfig
+	if cfg.TLS.IsEnabled() {
+		if tlsConfig, err = tlscommon.LoadTLSConfig(cfg.TLS); err != nil {
+			return nil, err
+		}
+	}
 	dialer := transport.NetDialer(cfg.Timeout)
 	tlsDialer, err := transport.TLSDialer(dialer, tlsConfig, cfg.Timeout)
-	return dialer, tlsDialer, err
+	if err != nil {
+		return nil, err
+	}
+	return &http.Transport{
+		Proxy:           proxy,
+		Dial:            dialer.Dial,
+		DialTLS:         tlsDialer.Dial,
+		TLSClientConfig: tlsConfig.ToConfig(),
+	}, nil
 }

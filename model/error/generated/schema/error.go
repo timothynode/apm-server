@@ -22,11 +22,11 @@ const ModelSchema = `{
     "type": "object",
     "description": "An error or a logged error message captured by an agent occurring in a monitored service",
     "allOf": [
-        {     "$id": "doc/spec/timestamp_epoch.json",
+        {     "$id": "docs/spec/timestamp_epoch.json",
     "title": "Timestamp Epoch",
     "description": "Object with 'timestamp' property.",
     "type": ["object"],
-    "properties": {  
+    "properties": {
         "timestamp": {
             "description": "Recorded time of the event, UTC based and formatted as microseconds since Unix epoch",
             "type": ["integer", "null"]
@@ -70,7 +70,7 @@ const ModelSchema = `{
                     }
                 },
                 "context": {
-                        "$id": "doc/spec/context.json",
+                        "$id": "docs/spec/context.json",
     "title": "Context",
     "description": "Any arbitrary contextual information regarding the event, captured by the agent, optionally provided by the user",
     "type": ["object", "null"],
@@ -85,34 +85,61 @@ const ModelSchema = `{
         },
         "response": {
             "type": ["object", "null"],
-            "properties": {
-                "finished": {
-                    "description": "A boolean indicating whether the response was finished or not",
-                    "type": ["boolean", "null"]
-                },
-                "headers": {
-                    "description": "A mapping of HTTP headers of the response object",
-                    "type": ["object", "null"],
-                    "patternProperties": {
-                        "[.*]*$": {
-                            "type": ["string", "array", "null"],
-                            "items": {
-                                "type": ["string"]
-                            }
-                        }
+            "allOf": [
+                {     "$id": "docs/spec/http_response.json",
+    "title": "HTTP response object",
+    "description": "HTTP response object, used by error, span and transction documents",
+    "type": ["object", "null"],
+    "properties": {
+        "status_code": {
+            "type": ["integer", "null"],
+            "description": "The status code of the http request."
+        },
+        "transfer_size": {
+            "type": ["number", "null"],
+            "description": "Total size of the payload."
+        },
+        "encoded_body_size": {
+            "type": ["number", "null"],
+            "description": "The encoded size of the payload."
+        },
+        "decoded_body_size":  {
+            "type": ["number", "null"],
+            "description": "The decoded size of the payload."
+        },
+        "headers": {
+            "type": ["object", "null"],
+            "patternProperties": {
+                "[.*]*$": {
+                    "type": ["string", "array", "null"],
+                    "items": {
+                        "type": ["string"]
                     }
-                },
-                "headers_sent": {
-                    "type": ["boolean", "null"]
-                },
-                "status_code": {
-                    "description": "The HTTP status code of the response.",
-                    "type": ["integer", "null"]
                 }
             }
+        }
+    } },
+                {
+                    "properties": {
+                        "finished": {
+                            "description": "A boolean indicating whether the response was finished or not",
+                            "type": [
+                                "boolean",
+                                "null"
+                            ]
+                        },
+                        "headers_sent": {
+                            "type": [
+                                "boolean",
+                                "null"
+                            ]
+                        }
+                    }
+                }
+            ]
         },
         "request": {
-                "$id": "docs/spec/http.json",
+                "$id": "docs/spec/request.json",
     "title": "Request",
     "description": "If a log record was generated as a result of a http request, the http interface can be used to collect this information.",
     "type": ["object", "null"],
@@ -215,7 +242,7 @@ const ModelSchema = `{
     "required": ["url", "method"]
         },
         "tags": {
-                "$id": "doc/spec/tags.json",
+                "$id": "docs/spec/tags.json",
     "title": "Tags",
     "type": ["object", "null"],
     "description": "A flat mapping of user-defined tags with string, boolean or number values.",
@@ -266,7 +293,7 @@ const ModelSchema = `{
         },
         "service": {
             "description": "Service related information can be sent per event. Provided information will override the more generic information from metadata, non provided fields will be set according to the metadata information.",
-                "$id": "doc/spec/service.json",
+                "$id": "docs/spec/service.json",
     "title": "Service",
     "type": ["object", "null"],
     "properties": {
@@ -360,6 +387,49 @@ const ModelSchema = `{
             }
         }
     }
+        },
+        "message": {
+                "$id": "docs/spec/message.json",
+    "title": "Message",
+    "description": "Details related to message receiving and publishing if the captured event integrates with a messaging system",
+    "type": ["object", "null"],
+    "properties": {
+        "queue": {
+            "type": ["object", "null"],
+            "properties": {
+                "name": {
+                    "description": "Name of the message queue where the message is received.",
+                    "type": ["string","null"],
+                    "maxLength": 1024
+                }
+            }
+        },
+        "age": {
+            "type": ["object", "null"],
+            "properties": {
+                "ms": {
+                    "description": "The age of the message in milliseconds. If the instrumented messaging framework provides a timestamp for the message, agents may use it. Otherwise, the sending agent can add a timestamp in milliseconds since the Unix epoch to the message's metadata to be retrieved by the receiving agent. If a timestamp is not available, agents should omit this field.",
+                    "type": ["integer", "null"]
+                }
+            }
+        },
+        "body": {
+            "description": "messsage body, similar to an http request body",
+            "type": ["string", "null"]
+        },
+        "headers": {
+            "description": "messsage headers, similar to http request headers",
+            "type": ["object", "null"],
+            "patternProperties": {
+                "[.*]*$": {
+                    "type": ["string", "array", "null"],
+                    "items": {
+                        "type": ["string"]
+                    }
+                }
+            }
+        }
+    }
         }
     }
                 },
@@ -411,7 +481,11 @@ const ModelSchema = `{
         },
         "filename": {
             "description": "The relative filename of the code involved in the stack frame, used e.g. to do error checksumming",
-            "type": "string"
+            "type": ["string", "null"]
+        },
+        "classname": {
+            "description": "The classname of the code involved in the stack frame",
+            "type": ["string", "null"]
         },
         "function": {
             "description": "The function involved in the stack frame",
@@ -451,7 +525,10 @@ const ModelSchema = `{
             "properties": {}
         }
     },
-    "required": ["filename"]
+    "anyOf": [
+        { "required": ["filename"], "properties": {"filename": { "type": "string" }} },
+        { "required": ["classname"], "properties": {"classname": { "type": "string" }} }
+    ]
                             },
                             "minItems": 0
                         },
@@ -525,7 +602,11 @@ const ModelSchema = `{
         },
         "filename": {
             "description": "The relative filename of the code involved in the stack frame, used e.g. to do error checksumming",
-            "type": "string"
+            "type": ["string", "null"]
+        },
+        "classname": {
+            "description": "The classname of the code involved in the stack frame",
+            "type": ["string", "null"]
         },
         "function": {
             "description": "The function involved in the stack frame",
@@ -565,7 +646,10 @@ const ModelSchema = `{
             "properties": {}
         }
     },
-    "required": ["filename"]
+    "anyOf": [
+        { "required": ["filename"], "properties": {"filename": { "type": "string" }} },
+        { "required": ["classname"], "properties": {"classname": { "type": "string" }} }
+    ]
                             },
                             "minItems": 0
                         }

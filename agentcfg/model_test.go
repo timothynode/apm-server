@@ -18,11 +18,11 @@
 package agentcfg
 
 import (
+	"encoding/json"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewDoc(t *testing.T) {
@@ -44,4 +44,27 @@ func TestNewDoc(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, Result{Source{Etag: "123", Settings: Settings{"sample_rate": "0.5"}}}, d)
 	})
+}
+
+func TestQueryMarshaling(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		out   string
+	}{
+		{name: "third_party",
+			input: `{"service":{"name":"auth-service","environment":"production"},"mark_as_applied_by_agent":true}`,
+			out:   `{"service":{"name":"auth-service","environment":"production"},"mark_as_applied_by_agent":true,"etag":""}`},
+		{name: "elastic_apm",
+			input: `{"service":{"name":"auth-service","environment":"production"},"etag":"1234"}`,
+			out:   `{"service":{"name":"auth-service","environment":"production"},"etag":"1234"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var query Query
+			require.NoError(t, json.Unmarshal([]byte(tc.input), &query))
+			out, err := json.Marshal(query)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.out, string(out))
+		})
+	}
 }

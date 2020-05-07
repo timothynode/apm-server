@@ -35,10 +35,15 @@ func main() {
 	}{
 		{"sourcemaps/payload.json", "model/sourcemap/generated/schema/payload.go", "PayloadSchema"},
 		{"metadata.json", "model/metadata/generated/schema/metadata.go", "ModelSchema"},
+		{"rum_v3_metadata.json", "model/metadata/generated/schema/rum_v3_metadata.go", "RUMV3Schema"},
 		{"errors/error.json", "model/error/generated/schema/error.go", "ModelSchema"},
 		{"transactions/transaction.json", "model/transaction/generated/schema/transaction.go", "ModelSchema"},
 		{"spans/span.json", "model/span/generated/schema/span.go", "ModelSchema"},
 		{"metricsets/metricset.json", "model/metricset/generated/schema/metricset.go", "ModelSchema"},
+		{"errors/rum_v3_error.json", "model/error/generated/schema/rum_v3_error.go", "RUMV3Schema"},
+		{"transactions/rum_v3_transaction.json", "model/transaction/generated/schema/rum_v3_transaction.go", "RUMV3Schema"},
+		{"spans/rum_v3_span.json", "model/span/generated/schema/rum_v3_span.go", "RUMV3Schema"},
+		{"metricsets/rum_v3_metricset.json", "model/metricset/generated/schema/rum_v3_metricset.go", "RUMV3Schema"},
 	}
 	for _, schemaInfo := range schemaPaths {
 		file := filepath.Join(filepath.Dir(basePath), schemaInfo.path)

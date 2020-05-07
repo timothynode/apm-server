@@ -4,6 +4,16 @@ APM Server is built on top of {beats-ref}/index.html[libbeat].
 As such, any breaking change in libbeat is also considered to be a breaking change in APM Server.
 
 [float]
+==== 7.7
+* There are no breaking changes in APM Server.
+However, a previously hardcoded feature is now configurable.
+Failing to follow these <<upgrading-to-77,upgrade steps>> will result in increased span metadata ingestion when upgrading to version 7.7.
+
+[float]
+==== 7.6
+* There are no breaking changes in APM Server.
+
+[float]
 ==== 7.5
 * Introduced dedicated `apm-server.ilm.setup.*` flags.
 This means you can now customize ILM behavior from within the APM Server configuration.
@@ -12,7 +22,7 @@ See {apm-server-ref}/ilm.html#ilm-setup[set up ILM] for more information.
 
 * By default, ILM policies will not longer be versioned.
 All event types will switch to the new default policy: rollover after 30 days or when reaching a size 50gb.
-See {apm-server-ref}/ilm.html#ilm-default[default policy] for more information.
+See {apm-server-ref}/ilm.html[default policy] for more information.
 
 * To make use of all the new features introduced in 7.5,
 you must ensure you are using version 7.5+ of APM Server and version 7.5+ of Kibana.

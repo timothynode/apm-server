@@ -22,11 +22,10 @@ import (
 	"github.com/pkg/errors"
 	"github.com/santhosh-tekuri/jsonschema"
 
-	"github.com/elastic/beats/libbeat/monitoring"
+	"github.com/elastic/beats/v7/libbeat/monitoring"
 
-	"github.com/elastic/apm-server/decoder"
-	"github.com/elastic/apm-server/model/metadata"
-	sm "github.com/elastic/apm-server/model/sourcemap"
+	"github.com/elastic/apm-server/model"
+	"github.com/elastic/apm-server/model/modeldecoder"
 	"github.com/elastic/apm-server/transform"
 	"github.com/elastic/apm-server/validation"
 )
@@ -35,17 +34,16 @@ const eventName = "sourcemap"
 
 var (
 	Processor = &sourcemapProcessor{
-		PayloadSchema: sm.PayloadSchema(),
-		DecodingCount: monitoring.NewInt(sm.Metrics, "decoding.count"),
-		DecodingError: monitoring.NewInt(sm.Metrics, "decoding.errors"),
-		ValidateCount: monitoring.NewInt(sm.Metrics, "validation.count"),
-		ValidateError: monitoring.NewInt(sm.Metrics, "validation.errors"),
+		PayloadSchema: modeldecoder.SourcemapSchema,
+		DecodingCount: monitoring.NewInt(model.SourcemapMetrics, "decoding.count"),
+		DecodingError: monitoring.NewInt(model.SourcemapMetrics, "decoding.errors"),
+		ValidateCount: monitoring.NewInt(model.SourcemapMetrics, "validation.count"),
+		ValidateError: monitoring.NewInt(model.SourcemapMetrics, "validation.errors"),
 	}
 )
 
 type sourcemapProcessor struct {
 	PayloadKey    string
-	EventDecoder  decoder.EventDecoder
 	PayloadSchema *jsonschema.Schema
 	DecodingCount *monitoring.Int
 	DecodingError *monitoring.Int
@@ -57,15 +55,15 @@ func (p *sourcemapProcessor) Name() string {
 	return eventName
 }
 
-func (p *sourcemapProcessor) Decode(raw map[string]interface{}) (*metadata.Metadata, []transform.Transformable, error) {
+func (p *sourcemapProcessor) Decode(raw map[string]interface{}) ([]transform.Transformable, error) {
 	p.DecodingCount.Inc()
-	transformable, err := sm.DecodeSourcemap(raw)
+	transformable, err := modeldecoder.DecodeSourcemap(raw)
 	if err != nil {
 		p.DecodingError.Inc()
-		return nil, nil, err
+		return nil, err
 	}
 
-	return &metadata.Metadata{}, []transform.Transformable{transformable}, err
+	return []transform.Transformable{transformable}, err
 }
 
 func (p *sourcemapProcessor) Validate(raw map[string]interface{}) error {

@@ -27,8 +27,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/elastic/beats/libbeat/beat"
-	"github.com/elastic/beats/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/common"
 
 	"github.com/elastic/apm-server/beater/api"
 	"github.com/elastic/apm-server/tests"
@@ -39,6 +39,7 @@ var testTransactionIds = tests.NewSet(
 	"945254c567a5417e",
 	"4340a8e0df1906ecbfa9",
 	"cdef4340a8e0df19",
+	"00xxxxFFaaaa1234",
 )
 
 func TestServerTracingEnabled(t *testing.T) {
@@ -73,6 +74,20 @@ func TestServerTracingEnabled(t *testing.T) {
 }
 
 func TestServerTracingExternal(t *testing.T) {
+	t.Run("no_auth", func(t *testing.T) {
+		testServerTracingExternal(t, "" /* Expecting no Authorization header */)
+	})
+	t.Run("secret_token_auth", func(t *testing.T) {
+		const secretToken = "s3cr3t"
+		testServerTracingExternal(t, "Bearer "+secretToken, m{"instrumentation": m{"secret_token": secretToken}})
+	})
+	t.Run("api_key_auth", func(t *testing.T) {
+		const apiKey = "bjB0czNjcjN0OnMzY3IzdA=="
+		testServerTracingExternal(t, "ApiKey "+apiKey, m{"instrumentation": m{"api_key": apiKey}})
+	})
+}
+
+func testServerTracingExternal(t *testing.T, expectedAuthorization string, extraConfigs ...map[string]interface{}) {
 	if testing.Short() {
 		t.Skip("skipping server test")
 	}
@@ -91,16 +106,21 @@ func TestServerTracingExternal(t *testing.T) {
 	// start a test apm-server
 	ucfg := common.MustNewConfigFrom(m{"instrumentation": m{
 		"enabled": true,
-		"hosts":   []string{"http://" + remote.Listener.Addr().String()}}})
-	apm, teardown, err := setupServer(t, ucfg, nil, nil)
+		"hosts":   []string{"http://" + remote.Listener.Addr().String()},
+	}})
+	for _, extra := range extraConfigs {
+		err := ucfg.Merge(extra)
+		require.NoError(t, err)
+	}
+
+	apm, err := setupServer(t, ucfg, nil, nil)
 	require.NoError(t, err)
-	defer teardown()
+	defer apm.Stop()
 
 	// make a transaction request
-	baseUrl, client := apm.client(false)
-	req := makeTransactionRequest(t, baseUrl)
+	req := makeTransactionRequest(t, apm.baseURL)
 	req.Header.Add("Content-Type", "application/x-ndjson")
-	res, err := client.Do(req)
+	res, err := apm.client.Do(req)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusAccepted, res.StatusCode, body(t, res))
 
@@ -109,8 +129,9 @@ func TestServerTracingExternal(t *testing.T) {
 	case r := <-requests:
 		assert.Equal(t, http.MethodPost, r.Method)
 		assert.Equal(t, api.IntakePath, r.RequestURI)
+		assert.Equal(t, expectedAuthorization, r.Header.Get("Authorization"))
 	case <-time.After(time.Second):
-		assert.FailNow(t, "timed out waiting for transaction to")
+		t.Fatal("timed out waiting for transaction to be received")
 	}
 }
 
@@ -172,7 +193,7 @@ func setupTestServerInstrumentation(t *testing.T, enabled bool) (chan beat.Event
 		"host":            "localhost:0",
 		"secret_token":    "foo",
 	})
-	beater, teardown, err := setupServer(t, cfg, nil, events)
+	beater, err := setupServer(t, cfg, nil, events)
 	require.NoError(t, err)
 
 	// onboarding event
@@ -180,13 +201,12 @@ func setupTestServerInstrumentation(t *testing.T, enabled bool) (chan beat.Event
 	assert.Equal(t, "onboarding", e.Fields["processor"].(common.MapStr)["name"])
 
 	// Send a transaction request so we have something to trace.
-	baseUrl, client := beater.client(false)
-	req := makeTransactionRequest(t, baseUrl)
+	req := makeTransactionRequest(t, beater.baseURL)
 	req.Header.Add("Content-Type", "application/x-ndjson")
 	req.Header.Add("Authorization", "Bearer foo")
-	resp, err := client.Do(req)
+	resp, err := beater.client.Do(req)
 	assert.NoError(t, err)
 	resp.Body.Close()
 
-	return events, teardown
+	return events, beater.Stop
 }

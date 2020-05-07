@@ -1,5 +1,9 @@
 [[server-info]]
-== Server Information
+== Server Information API
+
+++++
+<titleabbrev>Server information</titleabbrev>
+++++
 
 The APM Server exposes an API endpoint to query general server information.
 This lightweight endpoint is useful as a server up/down healthcheck.
@@ -16,7 +20,7 @@ http(s)://{hostname}:{port}/
 
 This endpoint always returns an HTTP 200.
 
-If a <<secret-token, secret token>> is set, only requests including <<config-secret-token, authentication>> will receive server details.
+If an <<api-key>> or <<secret-token>> is set, only requests including <<secure-communication-agents,authentication>> will receive server details.
 
 Set the `Accept` header set to `text/plain` to move the server information to the root level of the response, removing `ok`.
 

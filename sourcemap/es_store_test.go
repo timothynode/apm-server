@@ -18,8 +18,8 @@
 package sourcemap
 
 import (
+	"context"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/go-sourcemap/sourcemap"
@@ -27,7 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/v7/libbeat/logp"
 
 	"github.com/elastic/apm-server/elasticsearch"
 
@@ -43,7 +43,7 @@ func Test_esFetcher_fetchError(t *testing.T) {
 		temporary  bool
 	}{
 		"es not reachable": {
-			statusCode: http.StatusInternalServerError, temporary: true,
+			statusCode: -1, temporary: true,
 		},
 		"es bad request": {
 			statusCode: http.StatusBadRequest,
@@ -65,9 +65,13 @@ func Test_esFetcher_fetchError(t *testing.T) {
 			}
 			client, err := estest.NewElasticsearchClient(estest.NewTransport(t, statusCode, tc.esBody))
 			require.NoError(t, err)
-			consumer, err := testESStore(client).fetch("abc", "1.0", "/tmp")
+			consumer, err := testESStore(client).fetch(context.Background(), "abc", "1.0", "/tmp")
 			require.Error(t, err)
-			assert.Equal(t, tc.temporary, strings.Contains(err.Error(), errMsgESFailure))
+			if tc.temporary {
+				assert.Contains(t, err.Error(), errMsgESFailure)
+			} else {
+				assert.NotContains(t, err.Error(), errMsgESFailure)
+			}
 			assert.Empty(t, consumer)
 		})
 	}
@@ -82,7 +86,7 @@ func Test_esFetcher_fetch(t *testing.T) {
 		"valid sourcemap found": {client: test.ESClientWithValidSourcemap(t), filePath: "bundle.js"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			sourcemapStr, err := testESStore(tc.client).fetch("abc", "1.0", "/tmp")
+			sourcemapStr, err := testESStore(tc.client).fetch(context.Background(), "abc", "1.0", "/tmp")
 			require.NoError(t, err)
 
 			if tc.filePath == "" {

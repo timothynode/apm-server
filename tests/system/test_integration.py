@@ -1,15 +1,9 @@
-from datetime import datetime, timedelta
-import json
-import os
-import sys
 import time
 
-import requests
-
 from apmserver import integration_test
-from apmserver import ClientSideElasticTest, ElasticTest, ExpvarBaseTest
-from apmserver import OverrideIndicesTest, OverrideIndicesFailureTest
-from sets import Set
+from apmserver import ClientSideElasticTest, ElasticTest, ExpvarBaseTest, ProcStartupFailureTest
+from helper import wait_until
+from es_helper import index_smap, index_metric, index_transaction, index_error, index_span, index_onboarding, index_name
 
 
 @integration_test
@@ -19,12 +13,8 @@ class Test(ElasticTest):
         """
         This test starts the beat and checks that the onboarding doc has been published to ES
         """
-        self.wait_until(lambda: self.es.indices.exists(self.index_onboarding), name="onboarding index created")
-        self.es.indices.refresh(index=self.index_onboarding)
-
-        self.wait_until(
-            lambda: (self.es.count(index=self.index_onboarding)['count'] == 1)
-        )
+        wait_until(lambda: self.es.indices.exists(index_onboarding), name="onboarding index created")
+        wait_until(lambda: (self.es.count(index=index_onboarding)['count'] == 1))
 
         # Makes sure no error or warnings were logged
         self.assert_no_logged_warnings()
@@ -33,11 +23,10 @@ class Test(ElasticTest):
         """
         This test starts the beat and checks that the template has been loaded to ES
         """
-        self.wait_until(lambda: self.es.indices.exists(self.index_onboarding))
-        self.es.indices.refresh(index=self.index_onboarding)
-        templates = self.es.indices.get_template(self.index_name)
+        wait_until(lambda: self.es.indices.exists(index_onboarding))
+        templates = self.es.indices.get_template(index_name)
         assert len(templates) == 1
-        t = templates[self.index_name]
+        t = templates[index_name]
         total_fields_limit = t['settings']['index']['mapping']['total_fields']['limit']
         assert total_fields_limit == "2000", total_fields_limit
 
@@ -45,8 +34,8 @@ class Test(ElasticTest):
         self.load_docs_with_template(self.get_payload_path("transactions_spans.ndjson"),
                                      self.intake_url, 'transaction', 9)
         self.assert_no_logged_warnings()
-        mappings = self.es.indices.get_field_mapping(index=self.index_transaction, fields="context.tags.*")
-        for name, metric in mappings["{}-000001".format(self.index_transaction)]["mappings"].items():
+        mappings = self.es.indices.get_field_mapping(index=index_transaction, fields="context.tags.*")
+        for name, metric in mappings["{}-000001".format(index_transaction)]["mappings"].items():
             fullname = metric["full_name"]
             for mapping in metric["mapping"].values():
                 mtype = mapping["type"]
@@ -61,8 +50,8 @@ class Test(ElasticTest):
         self.load_docs_with_template(self.get_payload_path("transactions_spans.ndjson"),
                                      self.intake_url, 'transaction', 9)
         self.assert_no_logged_warnings()
-        mappings = self.es.indices.get_field_mapping(index=self.index_transaction, fields="transaction.marks.*")
-        for name, metric in mappings["{}-000001".format(self.index_transaction)]["mappings"].items():
+        mappings = self.es.indices.get_field_mapping(index=index_transaction, fields="transaction.marks.*")
+        for name, metric in mappings["{}-000001".format(index_transaction)]["mappings"].items():
             for mapping in metric["mapping"].values():
                 mtype = mapping["type"]
                 assert mtype == "scaled_float", name + " mapped as " + mtype + ", not scaled_float"
@@ -78,14 +67,12 @@ class Test(ElasticTest):
         self.assert_no_logged_warnings()
 
         # compare existing ES documents for transactions with new ones
-        rs = self.es.search(index=self.index_transaction)
-        assert rs['hits']['total']['value'] == 4, "found {} documents".format(rs['count'])
-        self.approve_docs('transaction', rs['hits']['hits'], 'transaction')
+        transaction_docs = self.wait_for_events('transaction', 4, index=index_transaction)
+        self.approve_docs('transaction', transaction_docs)
 
         # compare existing ES documents for spans with new ones
-        rs = self.es.search(index=self.index_span)
-        assert rs['hits']['total']['value'] == 5, "found {} documents".format(rs['count'])
-        self.approve_docs('spans', rs['hits']['hits'], 'span')
+        span_docs = self.wait_for_events('transaction', 5, index=index_span)
+        self.approve_docs('spans', span_docs)
 
     def test_load_docs_with_template_and_add_error(self):
         """
@@ -96,64 +83,18 @@ class Test(ElasticTest):
         self.assert_no_logged_warnings()
 
         # compare existing ES documents for errors with new ones
-        rs = self.es.search(index=self.index_error)
-        assert rs['hits']['total']['value'] == 4, "found {} documents".format(rs['count'])
-        self.approve_docs('error', rs['hits']['hits'], 'error')
+        error_docs = self.wait_for_events('error', 4, index=index_error)
+        self.approve_docs('error', error_docs)
 
-        self.check_backend_error_sourcemap(self.index_error, count=4)
+        self.check_backend_error_sourcemap(index_error, count=4)
 
-    def approve_docs(self, base_path, received, doc_type):
-        base_path = self._beat_path_join(os.path.dirname(__file__), base_path)
-        approved_path = base_path + '.approved.json'
-        received_path = base_path + '.received.json'
+    def test_load_docs_with_template_and_add_metricset(self):
+        self.load_docs_with_template(self.get_metricset_payload_path(), self.intake_url, 'metric', 2)
+        self.assert_no_logged_warnings()
 
-        try:
-            with open(approved_path) as f:
-                approved = json.load(f)
-        except IOError:
-            approved = []
-
-        received = [doc['_source'] for doc in received]
-        received.sort(key=lambda source: source[doc_type]['id'])
-
-        try:
-            for rec in received:
-                # Overwrite received observer values with the approved ones,
-                # in order to avoid noise in the 'approvals' diff if there are
-                # any other changes.
-                #
-                # We don't compare the observer values between received/approved,
-                # as they are dependent on the environment.
-                rec_id = rec[doc_type]['id']
-                rec_observer = rec['observer']
-                self.assertEqual(Set(rec_observer.keys()), Set(
-                    ["hostname", "version", "id", "ephemeral_id", "type", "version_major"]))
-                assert rec_observer["version"].startswith(str(rec_observer["version_major"]) + ".")
-                for appr in approved:
-                    if appr[doc_type]['id'] == rec_id:
-                        rec['observer'] = appr['observer']
-                        break
-            assert len(received) == len(approved)
-            for i, rec in enumerate(received):
-                appr = approved[i]
-                rec_id = rec[doc_type]['id']
-                assert rec_id == appr[doc_type]['id'], "New entry with id {}".format(rec_id)
-                for k, v in rec.items():
-                    self.assertEqual(v, appr[k])
-        except Exception as exc:
-            with open(received_path, 'w') as f:
-                json.dump(received, f, indent=4, separators=(',', ': '))
-
-            # Create a dynamic Exception subclass so we can fake its name to look like the original exception.
-            class ApprovalException(Exception):
-                def __init__(self, cause):
-                    super(ApprovalException, self).__init__(cause.message)
-
-                def __str__(self):
-                    return self.message + "\n\nReceived data differs from approved data. Run 'make update' and then 'approvals' to verify the diff."
-            ApprovalException.__name__ = type(exc).__name__
-
-            raise ApprovalException, exc, sys.exc_info()[2]
+        # compare existing ES documents for metricsets with new ones
+        metricset_docs = self.wait_for_events('metric', 2, index=index_metric)
+        self.approve_docs('metricset', metricset_docs)
 
 
 @integration_test
@@ -165,14 +106,14 @@ class EnrichEventIntegrationTest(ClientSideElasticTest):
                                      self.backend_intake_url,
                                      'error',
                                      4)
-        self.check_library_frames({"true": 1, "false": 1, "empty": 2}, self.index_error)
+        self.check_library_frames({"true": 1, "false": 1, "empty": 2}, index_error)
 
     def test_rum_error(self):
         self.load_docs_with_template(self.get_error_payload_path(),
                                      self.intake_url,
                                      'error',
                                      1)
-        self.check_library_frames({"true": 5, "false": 1, "empty": 0}, self.index_error)
+        self.check_library_frames({"true": 5, "false": 1, "empty": 0}, index_error)
 
     def test_backend_transaction(self):
         # for backend events library_frame information should not be changed,
@@ -181,20 +122,20 @@ class EnrichEventIntegrationTest(ClientSideElasticTest):
                                      self.backend_intake_url,
                                      'transaction',
                                      9)
-        self.check_library_frames({"true": 1, "false": 0, "empty": 1}, self.index_span)
+        self.check_library_frames({"true": 1, "false": 0, "empty": 1}, index_span)
 
     def test_rum_transaction(self):
         self.load_docs_with_template(self.get_transaction_payload_path(),
                                      self.intake_url,
                                      'transaction',
                                      2)
-        self.check_library_frames({"true": 1, "false": 1, "empty": 0}, self.index_span)
+        self.check_library_frames({"true": 1, "false": 1, "empty": 0}, index_span)
 
     def test_enrich_backend_event(self):
         self.load_docs_with_template(self.get_backend_transaction_payload_path(),
                                      self.backend_intake_url, 'transaction', 9)
 
-        rs = self.es.search(index=self.index_transaction)
+        rs = self.es.search(index=index_transaction)
 
         assert "ip" in rs['hits']['hits'][0]["_source"]["host"], rs['hits']
 
@@ -204,7 +145,7 @@ class EnrichEventIntegrationTest(ClientSideElasticTest):
                                      'error',
                                      1)
 
-        rs = self.es.search(index=self.index_error)
+        rs = self.es.search(index=index_error)
 
         hits = rs['hits']['hits']
         for hit in hits:
@@ -225,7 +166,7 @@ class EnrichEventIntegrationTest(ClientSideElasticTest):
                                      'error',
                                      2)
 
-        rs = self.es.search(index=self.index_error)
+        rs = self.es.search(index=index_error)
         docs = rs['hits']['hits']
         grouping_key1 = docs[0]["_source"]["error"]["grouping_key"]
         grouping_key2 = docs[1]["_source"]["error"]["grouping_key"]
@@ -252,7 +193,7 @@ class EnrichEventIntegrationTest(ClientSideElasticTest):
         if "stacktrace" not in doc:
             return
         for frame in doc["stacktrace"]:
-            if frame.has_key("library_frame"):
+            if "library_frame" in frame:
                 k = "true" if frame["library_frame"] else "false"
                 lf[k] += 1
             else:
@@ -269,7 +210,15 @@ class ILMDisabledIntegrationTest(ElasticTest):
                                      self.intake_url,
                                      'error',
                                      4,
-                                     query_index="{}-2017.05.09".format(self.index_error))
+                                     query_index="{}-2017.05.09".format(index_error))
+
+
+class OverrideIndicesTest(ElasticTest):
+    def config(self):
+        cfg = super(OverrideIndicesTest, self).config()
+        cfg.update({"override_index": index_name,
+                    "override_template": index_name})
+        return cfg
 
 
 @integration_test
@@ -282,15 +231,15 @@ class OverrideIndicesIntegrationTest(OverrideIndicesTest):
                                      self.intake_url,
                                      'error',
                                      4,
-                                     query_index=self.index_name)
+                                     query_index=index_name)
         self.load_docs_with_template(self.get_payload_path("transactions_spans_rum.ndjson"),
                                      self.intake_url,
                                      'transaction',
                                      2,
-                                     query_index=self.index_name)
+                                     query_index=index_name)
 
         # check that every document is indexed once in the expected index (incl.1 onboarding doc)
-        assert 4+2+1 == self.es.count(index=self.index_name)['count']
+        assert 4+2+1 == self.es.count(index=index_name)['count']
 
 
 @integration_test
@@ -303,8 +252,8 @@ class OverrideIndicesILMFalseIntegrationTest(OverrideIndicesTest):
                                      self.intake_url,
                                      'error',
                                      4,
-                                     query_index=self.index_name)
-        assert 4+1 == self.es.count(index=self.index_name)['count']
+                                     query_index=index_name)
+        assert 4+1 == self.es.count(index=index_name)['count']
 
 
 @integration_test
@@ -317,274 +266,21 @@ class OverrideIndicesILMTrueIntegrationTest(OverrideIndicesTest):
                                      self.intake_url,
                                      'error',
                                      4,
-                                     query_index=self.ilm_index(self.index_error))
-        assert 4 == self.es.count(index=self.ilm_index(self.index_error))['count']
+                                     query_index=self.ilm_index(index_error))
+        assert 4 == self.es.count(index=self.ilm_index(index_error))['count']
 
 
 @integration_test
-class OverrideIndicesFailureIntegrationTest(OverrideIndicesFailureTest):
-
-    def test_template_setup_error(self):
-        loaded_msg = "Exiting: setup.template.name and setup.template.pattern have to be set"
-        self.wait_until(lambda: self.log_contains(loaded_msg),
-                        max_timeout=5)
-
-
-@integration_test
-class SourcemappingIntegrationTest(ClientSideElasticTest):
-    def test_backend_error(self):
-        # ensure source mapping is not applied to backend events
-        # load event for which a sourcemap would be applied when sent to rum endpoint,
-        # and send against backend endpoint.
-
-        path = 'http://localhost:8000/test/e2e/general-usecase/bundle.js.map'
-        r = self.upload_sourcemap(
-            file_name='bundle.js.map', bundle_filepath=path)
-        assert r.status_code == 202, r.status_code
-        self.wait_for_sourcemaps()
-
-        self.load_docs_with_template(self.get_error_payload_path(),
-                                     self.backend_intake_url,
-                                     'error',
-                                     1)
-        self.assert_no_logged_warnings()
-        self.check_backend_error_sourcemap(self.index_error)
-
-    def test_duplicated_sourcemap_warning(self):
-        path = 'http://localhost:8000/test/e2e/general-usecase/bundle.js.map'
-
-        self.upload_sourcemap(file_name='bundle.js.map', bundle_filepath=path)
-        self.wait_for_sourcemaps()
-
-        self.upload_sourcemap(file_name='bundle.js.map', bundle_filepath=path)
-        self.wait_for_sourcemaps(2)
-        assert self.log_contains(
-            "Overriding sourcemap"), "A log should be written when a sourcemap is overwritten"
-
-        self.upload_sourcemap(file_name='bundle.js.map', bundle_filepath=path)
-        self.wait_for_sourcemaps(3)
-        assert self.log_contains("2 sourcemaps found for service"), \
-            "the 3rd fetch should query ES and find that there are 2 sourcemaps with the same caching key"
-
-        self.assert_no_logged_warnings(
-            ["WARN.*Overriding sourcemap", "WARN.*2 sourcemaps found for service"])
-
-    def test_rum_error(self):
-        # use an uncleaned path to test that path is cleaned in upload
-        path = 'http://localhost:8000/test/e2e/../e2e/general-usecase/bundle.js.map'
-        r = self.upload_sourcemap(file_name='bundle.js.map', bundle_filepath=path)
-        assert r.status_code == 202, r.status_code
-        self.wait_for_sourcemaps()
-
-        self.load_docs_with_template(self.get_error_payload_path(),
-                                     self.intake_url,
-                                     'error',
-                                     1)
-        self.assert_no_logged_warnings()
-        self.check_rum_error_sourcemap(True)
-
-    def test_backend_span(self):
-        # ensure source mapping is not applied to backend events
-        # load event for which a sourcemap would be applied when sent to rum endpoint,
-        # and send against backend endpoint.
-
-        path = 'http://localhost:8000/test/e2e/general-usecase/bundle.js.map'
-        r = self.upload_sourcemap(file_name='bundle.js.map',
-                                  bundle_filepath=path,
-                                  service_version='1.0.0')
-        assert r.status_code == 202, r.status_code
-        self.wait_for_sourcemaps()
-
-        self.load_docs_with_template(self.get_transaction_payload_path(),
-                                     self.backend_intake_url,
-                                     'transaction',
-                                     2)
-        self.assert_no_logged_warnings()
-        self.check_backend_span_sourcemap()
-
-    def test_rum_transaction(self):
-        path = 'http://localhost:8000/test/e2e/general-usecase/bundle.js.map'
-        r = self.upload_sourcemap(file_name='bundle.js.map',
-                                  bundle_filepath=path,
-                                  service_version='1.0.0')
-        assert r.status_code == 202, r.status_code
-        self.wait_for_sourcemaps()
-
-        self.load_docs_with_template(self.get_transaction_payload_path(),
-                                     self.intake_url,
-                                     'transaction',
-                                     2)
-        self.assert_no_logged_warnings()
-        self.check_rum_transaction_sourcemap(True)
-
-    def test_rum_transaction_different_subdomain(self):
-        path = 'http://localhost:8000/test/e2e/general-usecase/bundle.js.map'
-        r = self.upload_sourcemap(file_name='bundle.js.map',
-                                  bundle_filepath=path,
-                                  service_version='1.0.0')
-        assert r.status_code == 202, r.status_code
-        self.wait_for_sourcemaps()
-
-        self.load_docs_with_template(self.get_payload_path('transactions_spans_rum_2.ndjson'),
-                                     self.intake_url,
-                                     'transaction',
-                                     2)
-        self.assert_no_logged_warnings()
-        self.check_rum_transaction_sourcemap(True)
-
-    def test_no_sourcemap(self):
-        self.load_docs_with_template(self.get_error_payload_path(),
-                                     self.intake_url,
-                                     'error',
-                                     1)
-        self.check_rum_error_sourcemap(
-            False, expected_err="No Sourcemap available")
-
-    def test_no_matching_sourcemap(self):
-        r = self.upload_sourcemap('bundle_no_mapping.js.map')
-        self.assert_no_logged_warnings()
-        assert r.status_code == 202, r.status_code
-        self.wait_for_sourcemaps()
-        self.test_no_sourcemap()
-
-    def test_fetch_latest_of_multiple_sourcemaps(self):
-        # upload sourcemap file that finds no matchings
-        path = 'http://localhost:8000/test/e2e/general-usecase/bundle.js.map'
-        r = self.upload_sourcemap(
-            file_name='bundle_no_mapping.js.map', bundle_filepath=path)
-        assert r.status_code == 202, r.status_code
-        self.wait_for_sourcemaps()
-        self.load_docs_with_template(self.get_error_payload_path(),
-                                     self.intake_url,
-                                     'error',
-                                     1)
-        self.check_rum_error_sourcemap(
-            False, expected_err="No Sourcemap found for")
-
-        # remove existing document
-        self.es.delete_by_query(index=self.index_error, body={"query": {"term": {"processor.name": 'error'}}})
-        self.wait_until(lambda: (self.es.count(index=self.index_error)['count'] == 0))
-
-        # upload second sourcemap file with same key,
-        # that actually leads to proper matchings
-        # this also tests that the cache gets invalidated,
-        # as otherwise the former sourcemap would be taken from the cache.
-        r = self.upload_sourcemap(
-            file_name='bundle.js.map', bundle_filepath=path)
-        assert r.status_code == 202, r.status_code
-        self.wait_for_sourcemaps(expected_ct=2)
-        self.load_docs_with_template(self.get_error_payload_path(),
-                                     self.intake_url,
-                                     'error',
-                                     1)
-        self.check_rum_error_sourcemap(True, count=1)
-
-    def test_sourcemap_mapping_cache_usage(self):
-        path = 'http://localhost:8000/test/e2e/general-usecase/bundle.js.map'
-        r = self.upload_sourcemap(
-            file_name='bundle.js.map', bundle_filepath=path)
-        assert r.status_code == 202, r.status_code
-        self.wait_for_sourcemaps()
-
-        # insert document, which also leads to caching the sourcemap
-        self.load_docs_with_template(self.get_error_payload_path(),
-                                     self.intake_url,
-                                     'error',
-                                     1)
-        self.assert_no_logged_warnings()
-
-        # delete sourcemap from ES
-        # fetching from ES would lead to an error afterwards
-        self.es.indices.delete(index=self.index_smap, ignore=[400, 404])
-        self.es.indices.delete(index="{}-000001".format(self.index_error), ignore=[400, 404])
-        self.es.indices.refresh()
-
-        # insert document,
-        # fetching sourcemap without errors, so it must be fetched from cache
-        self.load_docs_with_template(self.get_error_payload_path(),
-                                     self.intake_url,
-                                     'error',
-                                     1)
-        self.assert_no_logged_warnings()
-        self.check_rum_error_sourcemap(True)
-
-    def test_rum_error_changed_index(self):
-        # use an uncleaned path to test that path is cleaned in upload
-        path = 'http://localhost:8000/test/e2e/../e2e/general-usecase/bundle.js.map'
-        r = self.upload_sourcemap(
-            file_name='bundle.js.map', bundle_filepath=path)
-        assert r.status_code == 202, r.status_code
-        self.wait_for_sourcemaps()
-
-        self.load_docs_with_template(self.get_error_payload_path(),
-                                     self.intake_url,
-                                     'error',
-                                     1)
-        self.assert_no_logged_warnings()
-        self.check_rum_error_sourcemap(True)
-
-
-@integration_test
-class SourcemappingCacheIntegrationTest(ClientSideElasticTest):
-    config_overrides = {"smap_cache_expiration": "1"}
-
-    def test_sourcemap_cache_expiration(self):
-        path = 'http://localhost:8000/test/e2e/general-usecase/bundle.js.map'
-        r = self.upload_sourcemap(
-            file_name='bundle.js.map', bundle_filepath=path)
-        assert r.status_code == 202, r.status_code
-        self.wait_for_sourcemaps()
-
-        # insert document, which also leads to caching the sourcemap
-        self.load_docs_with_template(self.get_error_payload_path(),
-                                     self.intake_url,
-                                     'error',
-                                     1)
-        self.assert_no_logged_warnings()
-
-        # delete sourcemap and error event from ES
-        self.es.indices.delete(index=self.ilm_index(self.index_error))
-        # fetching from ES will lead to an error afterwards
-        self.es.indices.delete(index=self.index_smap, ignore=[400, 404])
-        self.wait_until(lambda: not self.es.indices.exists(self.index_smap))
-        # ensure smap is not in cache any more
-        time.sleep(1)
-
-        # after cache expiration no sourcemap should be found any more
-        self.load_docs_with_template(self.get_error_payload_path(),
-                                     self.intake_url,
-                                     'error',
-                                     1)
-        self.check_rum_error_sourcemap(False, expected_err="No Sourcemap available")
-
-
-@integration_test
-class SourcemappingDisabledIntegrationTest(ClientSideElasticTest):
+class OverrideIndicesFailureIntegrationTest(ProcStartupFailureTest):
     config_overrides = {
-        "rum_sourcemapping_disabled": True,
+        "override_index": "apm-foo",
+        "elasticsearch_host": "localhost:8200",
+        "file_enabled": "false",
     }
 
-    def test_rum_transaction(self):
-        path = 'http://localhost:8000/test/e2e/general-usecase/bundle.js.map'
-        r = self.upload_sourcemap(file_name='bundle.js.map',
-                                  bundle_filepath=path,
-                                  service_version='1.0.0')
-        assert r.status_code == 403, r.status_code
-
-        self.load_docs_with_template(self.get_transaction_payload_path(),
-                                     self.intake_url,
-                                     'transaction',
-                                     2)
-        rs = self.es.search(index=self.index_span, params={"rest_total_hits_as_int": "true"})
-        assert rs['hits']['total'] == 1, "found {} documents, expected {}".format(
-            rs['hits']['total'], 1)
-        frames_checked = 0
-        for doc in rs['hits']['hits']:
-            span = doc["_source"]["span"]
-            for frame in span["stacktrace"]:
-                frames_checked += 1
-                assert "sourcemap" not in frame, frame
-        assert frames_checked > 0, "no frames checked"
+    def test_template_setup_error(self):
+        loaded_msg = "Exiting: `setup.template.name` and `setup.template.pattern` have to be set"
+        wait_until(lambda: self.log_contains(loaded_msg), max_timeout=5)
 
 
 @integration_test
@@ -621,99 +317,25 @@ class ExpvarCustomUrlIntegrationTest(ExpvarBaseTest):
 @integration_test
 class MetricsIntegrationTest(ElasticTest):
     def test_metric_doc(self):
-        self.load_docs_with_template(self.get_metricset_payload_payload_path(), self.intake_url, 'metric', 2)
+        self.load_docs_with_template(self.get_metricset_payload_path(), self.intake_url, 'metric', 2)
         mappings = self.es.indices.get_field_mapping(
-            index=self.index_metric, fields="system.process.cpu.total.norm.pct")
+            index=index_metric, fields="system.process.cpu.total.norm.pct")
         expected_type = "scaled_float"
-        doc = mappings[self.ilm_index(self.index_metric)]["mappings"]
+        doc = mappings[self.ilm_index(index_metric)]["mappings"]
         actual_type = doc["system.process.cpu.total.norm.pct"]["mapping"]["pct"]["type"]
         assert expected_type == actual_type, "want: {}, got: {}".format(expected_type, actual_type)
 
 
 @integration_test
-class ProfileIntegrationTest(ElasticTest):
-    def metric_fields(self):
-        metric_fields = set()
-        rs = self.es.search(index=self.index_profile)
-        for hit in rs["hits"]["hits"]:
-            profile = hit["_source"]["profile"]
-            metric_fields.update((k for (k, v) in profile.items() if type(v) is int))
-        return metric_fields
-
-    def wait_for_profile(self):
-        def cond():
-            self.es.indices.refresh(index=self.index_profile)
-            response = self.es.count(index=self.index_profile, body={"query": {"term": {"processor.name": "profile"}}})
-            return response['count'] != 0
-        self.wait_until(cond, max_timeout=10, name="waiting for profile")
-
-
-@integration_test
-class CPUProfileIntegrationTest(ProfileIntegrationTest):
-    config_overrides = {
-        "instrumentation_enabled": "true",
-        "profiling_cpu_enabled": "true",
-        "profiling_cpu_interval": "1s",
-        "profiling_cpu_duration": "5s",
-    }
-
-    def test_self_profiling(self):
-        """CPU profiling enabled"""
-
-        def create_load():
-            payload_path = self.get_payload_path("transactions_spans.ndjson")
-            with open(payload_path) as f:
-                requests.post(self.intake_url, data=f, headers={'content-type': 'application/x-ndjson'})
-
-        # Wait for profiling to begin, and then start sending data
-        # to the server to create some CPU load.
-
-        time.sleep(1)
-        start = datetime.now()
-        while datetime.now()-start < timedelta(seconds=5):
-            create_load()
-        self.wait_for_profile()
-
-        expected_metric_fields = set([u"cpu.ns", u"samples.count", u"duration"])
-        metric_fields = self.metric_fields()
-        self.assertEqual(metric_fields, expected_metric_fields)
-
-
-@integration_test
-class HeapProfileIntegrationTest(ProfileIntegrationTest):
-    config_overrides = {
-        "instrumentation_enabled": "true",
-        "profiling_heap_enabled": "true",
-        "profiling_heap_interval": "1s",
-    }
-
-    def test_self_profiling(self):
-        """Heap profiling enabled"""
-
-        time.sleep(1)
-        self.wait_for_profile()
-
-        expected_metric_fields = set([
-            u"alloc_objects.count",
-            u"inuse_objects.count",
-            u"alloc_space.bytes",
-            u"inuse_space.bytes",
-        ])
-        metric_fields = self.metric_fields()
-        self.assertEqual(metric_fields, expected_metric_fields)
-
-
-@integration_test
 class ExperimentalBaseTest(ElasticTest):
     def check_experimental_key_indexed(self, experimental):
-        self.wait_until_pipelines_registered()
         self.load_docs_with_template(self.get_payload_path("experimental.ndjson"),
                                      self.intake_url, 'transaction', 2)
-        self.wait_until(lambda: self.log_contains("events have been published"), max_timeout=10)
+        wait_until(lambda: self.log_contains("events have been published"), max_timeout=10)
         time.sleep(2)
         self.assert_no_logged_warnings()
 
-        for idx in [self.index_transaction, self.index_span, self.index_error]:
+        for idx in [index_transaction, index_span, index_error]:
             # ensure documents exist
             rs = self.es.search(index=idx)
             assert rs['hits']['total']['value'] == 1

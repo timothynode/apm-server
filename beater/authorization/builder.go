@@ -18,6 +18,7 @@
 package authorization
 
 import (
+	"context"
 	"time"
 
 	"github.com/elastic/apm-server/beater/config"
@@ -37,44 +38,48 @@ type Handler Builder
 
 // Authorization interface to be implemented by different auth types
 type Authorization interface {
-	AuthorizedFor(string) (bool, error)
+	AuthorizedFor(context.Context, elasticsearch.Resource) (bool, error)
 	IsAuthorizationConfigured() bool
 }
 
 const (
-	cacheTimeoutMinute = 5
+	cacheTimeoutMinute = 1 * time.Minute
 )
 
 // NewBuilder creates authorization builder based off of the given information
+// if apm-server.api_key is enabled, authorization is granted/denied solely
+// based on the request Authorization header
 func NewBuilder(cfg *config.Config) (*Builder, error) {
 	b := Builder{}
 	b.fallback = AllowAuth{}
 	if cfg.APIKeyConfig.IsEnabled() {
+		// do not use username+password for API Key requests
+		cfg.APIKeyConfig.ESConfig.Username = ""
+		cfg.APIKeyConfig.ESConfig.Password = ""
+		cfg.APIKeyConfig.ESConfig.APIKey = ""
 		client, err := elasticsearch.NewClient(cfg.APIKeyConfig.ESConfig)
 		if err != nil {
 			return nil, err
 		}
 
-		size := cfg.APIKeyConfig.LimitMin * cacheTimeoutMinute
-		cache := newPrivilegesCache(cacheTimeoutMinute*time.Minute, size)
-		b.apikey = newApikeyBuilder(client, cache, []string{})
+		cache := newPrivilegesCache(cacheTimeoutMinute, cfg.APIKeyConfig.LimitPerMin)
+		b.apikey = newApikeyBuilder(client, cache, []elasticsearch.PrivilegeAction{})
 		b.fallback = DenyAuth{}
 	}
 	if cfg.SecretToken != "" {
 		b.bearer = &bearerBuilder{cfg.SecretToken}
 		b.fallback = DenyAuth{}
 	}
-	b.fallback.IsAuthorizationConfigured()
 	return &b, nil
 }
 
 // ForPrivilege creates an authorization Handler checking for this privilege
-func (b *Builder) ForPrivilege(privilege string) *Handler {
-	return b.ForAnyOfPrivileges([]string{privilege})
+func (b *Builder) ForPrivilege(privilege elasticsearch.PrivilegeAction) *Handler {
+	return b.ForAnyOfPrivileges(privilege)
 }
 
 // ForAnyOfPrivileges creates an authorization Handler checking for any of the provided privileges
-func (b *Builder) ForAnyOfPrivileges(privileges []string) *Handler {
+func (b *Builder) ForAnyOfPrivileges(privileges ...elasticsearch.PrivilegeAction) *Handler {
 	handler := Handler{bearer: b.bearer, fallback: b.fallback}
 	if b.apikey != nil {
 		handler.apikey = newApikeyBuilder(b.apikey.esClient, b.apikey.cache, privileges)

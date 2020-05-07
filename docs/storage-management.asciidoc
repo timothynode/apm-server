@@ -1,30 +1,36 @@
 [[storage-management]]
-= Storage Management
+== Storage Management
 
-[partintro]
---
+++++
+<titleabbrev>Manage Storage</titleabbrev>
+++++
 
 * <<sizing-guide, Storage and sizing guide>>
 * <<processing-performance, Processing and performance>>
 * <<reduce-storage, Reduce storage usage>>
 * <<manage-indices-kibana, Manage APM indices via Kibana>>
 * <<update-existing-data, Update existing data>>
---
 
 [[sizing-guide]]
-== Storage and sizing guide
+=== Storage and sizing guide
 
-APM Server handles a few different kinds of {apm-overview-ref-v}/apm-data-model.html[events].
-Since processing and storage costs are largely dominated by
-{apm-overview-ref-v}/transactions.html[transactions] and
-{apm-overview-ref-v}/transaction-spans.html[spans],
-only those will be covered here.
+APM processing and storage costs are largely dominated by transactions, spans, and stack frames.
 
-NOTE: When the sampling rate is very small, transactions will be the dominate storage cost.
+* {apm-overview-ref-v}/transactions.html[*Transactions*] describe an event captured by an Elastic APM agent instrumenting a service.
+They are the highest level of work being measuring within a service.
+* {apm-overview-ref-v}/transaction-spans.html[*Spans*] belong to transactions. They measure from the start to end of an activity,
+and contain information about a specific code path that has been executed.
+* *Stack frames* belong to spans. Stack frames represent a function call on the call stack,
+and include attributes like function name, file name and path, line number, etc.
+Stack frames can heavily influence the size of a span.
 
 [float]
 [[typical-transactions]]
-=== Typical transactions
+==== Typical transactions
+
+Due to the high variability of APM data, it's difficult to classify a transaction as typical.
+Regardless, this guide will attempt to classify Transactions as _Small_, _Medium_, or _Large_,
+and make recommendations based on those classifications.
 
 The size of a transaction depends on the language, agent settings, and what services the agent instruments.
 For instance, an agent auto-instrumenting a service with a popular tech stack
@@ -33,44 +39,45 @@ For instance, an agent auto-instrumenting a service with a popular tech stack
 In addition, all agents support manual instrumentation.
 How little or much you use these APIs will also impact what a typical transaction looks like.
 
-Due to the high variability of transactions, it's difficult to classify a transaction as typical.
-Regardless, here's a speculative reference: 
+If your sampling rate is very small, transactions will be the dominate storage cost.
+
+Here's a speculative reference: 
 
 [options="header"]
 |=======================================================================
-|Transaction size |Number of Spans |Number of Frames
+|Transaction size |Number of Spans |Number of stack frames
 |_Small_ |5-10 |5-10
 |_Medium_ |15-20 |15-20
 |_Large_ |30-40 |30-40
 |=======================================================================
 
-There will always be transaction outliers with hundreds of spans or frames, but those are very rare.
+There will always be transaction outliers with hundreds of spans or stack frames, but those are very rare.
 Small transactions are the most common.
 
 [float]
 [[typical-storage]]
-=== Typical storage
+==== Typical storage
 
 Consider the following typical storage reference.
 These numbers do not account for Elasticsearch compression.
 
 * 1 unsampled transaction is **~1 Kb**
-* 1 span with 10 frames is **~4 Kb**
-* 1 span with 50 frames is **~20 Kb**
-* 1 transaction with 10 spans, each with 10 frames is **~50 Kb**
+* 1 span with 10 stack frames is **~4 Kb**
+* 1 span with 50 stack frames is **~20 Kb**
+* 1 transaction with 10 spans, each with 10 stack frames is **~50 Kb**
 * 1 transaction with 25 spans, each with 25 spans is **250-300 Kb**
-* 100 transactions with 10 spans, each with 10 frames, sampled at 90% is **600 Kb**
+* 100 transactions with 10 spans, each with 10 stack frames, sampled at 90% is **600 Kb**
 
 APM data compresses quite well, so the storage cost in Elasticsearch will be considerably less:
 
 * Indexing 100 unsampled transactions per second for 1 hour results in 360,000 documents. These documents use around **50 Mb** of disk space.   
-* Indexing 10 transactions per second for 1 hour, each transaction with 10 spans, each span with 10 frames, results in 396,000 documents. These documents use around **200 Mb** of disk space. 
-* Indexing 25 transactions per second for 1 hour, each transaction with 25 spans, each span with 25 frames, results in 2,340,000 documents. These documents use around **1.2 Gb** of disk space.
+* Indexing 10 transactions per second for 1 hour, each transaction with 10 spans, each span with 10 stack frames, results in 396,000 documents. These documents use around **200 Mb** of disk space. 
+* Indexing 25 transactions per second for 1 hour, each transaction with 25 spans, each span with 25 stack frames, results in 2,340,000 documents. These documents use around **1.2 Gb** of disk space.
 
 NOTE: These examples were indexing the same data over and over with minimal variation. Because of that, the compression ratios observed of 80-90% are somewhat optimistic.
 
 [[processing-performance]]
-== Processing and performance
+=== Processing and performance
 
 APM Server performance depends on a number of factors: memory and CPU available,
 network latency, transaction sizes, workload patterns,
@@ -93,13 +100,13 @@ As a reminder, events are
 |Transaction/Instance |512Mb Instance |2Gb Instance |8Gb Instance
 |Small transactions
 
-_5 spans with 5 frames each_ |600 events/second |1200 events/second |4800 events/second 
+_5 spans with 5 stack frames each_ |600 events/second |1200 events/second |4800 events/second 
 |Medium transactions
 
-_15 spans with 15 frames each_ |300 events/second |600 events/second |2400 events/second
+_15 spans with 15 stack frames each_ |300 events/second |600 events/second |2400 events/second
 |Large transactions
 
-_30 spans with 30 frames each_ |150 events/second |300 events/second |1400 events/second
+_30 spans with 30 stack frames each_ |150 events/second |300 events/second |1400 events/second
 |=======================================================================
 
 In other words, a 512 Mb instance can process \~3 Mbs per second,
@@ -115,7 +122,7 @@ This means that with a properly sized Elasticsearch instance, APM Server scales 
 NOTE: RUM deserves special consideration. The RUM agent runs in browsers, and there can be many thousands reporting to an APM Server with very variable network latency. 
 
 [[reduce-storage]]
-== Reduce storage
+=== Reduce storage
 
 The amount of storage for APM data depends on several factors:
 the number of services you are instrumenting, how much traffic the services see, agent and server settings,
@@ -123,7 +130,7 @@ and the length of time you store your data.
 
 [float]
 [[reduce-sample-rate]]
-=== Reduce the sample rate
+==== Reduce the sample rate
 
 The transaction sample rate directly influences the number of documents (more precisely, spans) to be indexed.
 It is the easiest way to reduce storage.
@@ -133,7 +140,7 @@ Reducing it does not affect the collection of metrics such as _Transactions per 
 
 [float]
 [[reduce-stacktrace]]
-=== Reduce collected stacktrace information
+==== Reduce collected stacktrace information
 
 Elastic APM agents collect `stacktrace` information under certain circumstances.
 This can be very helpful in identifying issues in your code,
@@ -143,7 +150,7 @@ Stacktrace collection settings are managed in each agent.
 
 [float]
 [[delete-data]]
-=== Delete data
+==== Delete data
 
 You might want to only keep data for a defined time period.
 This might mean deleting old documents periodically,
@@ -157,7 +164,7 @@ or in the {kibana-ref}/managing-indices.html[Kibana Index Management UI].
 
 [float]
 [[delete-data-ilm]]
-==== Delete data with ILM
+===== Delete data with ILM
 
 Index Lifecycle management (ILM) enables you to automate how you want to manage your indices over time.
 You can base actions on factors such as shard size and performance requirements.
@@ -165,7 +172,7 @@ See <<ilm>> to learn more.
 
 [float]
 [[delete-data-periodically]]
-==== Delete data periodically
+===== Delete data periodically
 
 To delete data periodically you can use {curator-ref-current}[Curator] and set up a cron job to run it.
 
@@ -202,7 +209,7 @@ INFO      "delete_indices" action completed.
 
 [float]
 [[delete-data-by-query]]
-==== Delete data matching a query
+===== Delete data matching a query
 
 You can delete documents matching a specific query.
 For example, all documents with a given `c`ontext.service.name` use the following request:
@@ -231,13 +238,13 @@ See {ref}/docs-delete-by-query.html[delete by query] for further information on 
 
 [float]
 [[delete-data-kibana]]
-==== Delete data via Kibana Index Management UI
+===== Delete data via Kibana Index Management UI
 
 Select the indices you want to delete, and click **Manage indices** to see the available actions.
 Then click **delete indices**.
 
 [[manage-indices-kibana]]
-== Manage Indices via Kibana
+=== Manage Indices via Kibana
 
 The Kibana UI for {kibana-ref}/managing-indices.html[managing indices] allows you to view indices,
 index settings, mappings, document counts, used storage per index, and much more.
@@ -245,7 +252,7 @@ You can also perform management operations, like deleting indices directly via t
 Finally, the UI supports applying bulk operations on several indices at once.
 
 [[update-existing-data]]
-== Update existing data
+=== Update existing data
 
 You might want to update documents that are already indexed.
 For example, if you your service name was set incorrectly.
@@ -254,7 +261,7 @@ To do this, you can use the {ref}/docs-update-by-query.html[Update By Query API]
 
 [float]
 [[update-data-rename-a-service]]
-=== Rename a service
+==== Rename a service
 
 To rename a service, send the following request:
 

@@ -18,6 +18,7 @@
 package agentcfg
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -26,7 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/elastic/beats/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/common"
 
 	"github.com/elastic/apm-server/kibana"
 	"github.com/elastic/apm-server/tests"
@@ -43,14 +44,14 @@ func TestFetcher_Fetch(t *testing.T) {
 
 	t.Run("ExpectationFailed", func(t *testing.T) {
 		kb := tests.MockKibana(http.StatusExpectationFailed, m{"error": "an error"}, mockVersion, true)
-		_, err := NewFetcher(kb, testExpiration).Fetch(query(t.Name()))
+		_, err := NewFetcher(kb, testExpiration).Fetch(context.Background(), query(t.Name()))
 		require.Error(t, err)
 		assert.Equal(t, "{\"error\":\"an error\"}", err.Error())
 	})
 
 	t.Run("NotFound", func(t *testing.T) {
 		kb := tests.MockKibana(http.StatusNotFound, m{}, mockVersion, true)
-		result, err := NewFetcher(kb, testExpiration).Fetch(query(t.Name()))
+		result, err := NewFetcher(kb, testExpiration).Fetch(context.Background(), query(t.Name()))
 		require.NoError(t, err)
 		assert.Equal(t, zeroResult(), result)
 	})
@@ -60,7 +61,7 @@ func TestFetcher_Fetch(t *testing.T) {
 		b, err := json.Marshal(mockDoc(0.5))
 		expectedResult, err := newResult(b, err)
 		require.NoError(t, err)
-		result, err := NewFetcher(kb, testExpiration).Fetch(query(t.Name()))
+		result, err := NewFetcher(kb, testExpiration).Fetch(context.Background(), query(t.Name()))
 		require.NoError(t, err)
 		assert.Equal(t, expectedResult, result)
 	})
@@ -79,7 +80,7 @@ func TestFetcher_Fetch(t *testing.T) {
 			expectedResult, err := newResult(b, err)
 			require.NoError(t, err)
 
-			result, err := f.Fetch(query(t.Name()))
+			result, err := f.Fetch(context.Background(), query(t.Name()))
 			require.NoError(t, err)
 			assert.Equal(t, expectedResult, result)
 		}
@@ -103,10 +104,26 @@ func TestSanitize(t *testing.T) {
 	input := Result{Source: Source{
 		Agent:    "python",
 		Settings: Settings{"transaction_sample_rate": "0.1", "capture_body": "false"}}}
-	assert.Equal(t, input, sanitize(false, input))
-	assert.Equal(t, zeroResult(), sanitize(true, input))
+	// full result as not requested for an insecure agent
+	assert.Equal(t, input, sanitize([]string{}, input))
+
+	// no result for insecure agent
+	assert.Equal(t, zeroResult(), sanitize([]string{"rum-js"}, input))
+
+	// limited result for insecure agent
+	insecureAgents := []string{"rum-js"}
 	input.Source.Agent = "rum-js"
-	assert.Equal(t, Settings{"transaction_sample_rate": "0.1"}, sanitize(true, input).Source.Settings)
+	assert.Equal(t, Settings{"transaction_sample_rate": "0.1"}, sanitize(insecureAgents, input).Source.Settings)
+
+	// limited result for insecure agent prefix
+	insecureAgents = []string{"Jaeger"}
+	input.Source.Agent = "Jaeger/Python"
+	assert.Equal(t, Settings{"transaction_sample_rate": "0.1"}, sanitize(insecureAgents, input).Source.Settings)
+
+	// no result for insecure agent prefix
+	insecureAgents = []string{"Python"}
+	input.Source.Agent = "Jaeger/Python"
+	assert.Equal(t, zeroResult(), sanitize(insecureAgents, input))
 }
 
 func TestCustomJSON(t *testing.T) {

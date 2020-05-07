@@ -14,6 +14,9 @@ pipeline {
     ITS_PIPELINE = 'apm-integration-tests-selector-mbp/master'
     DIAGNOSTIC_INTERVAL = "${params.DIAGNOSTIC_INTERVAL}"
     ES_LOG_LEVEL = "${params.ES_LOG_LEVEL}"
+    DOCKER_SECRET = 'secret/apm-team/ci/docker-registry/prod'
+    DOCKER_REGISTRY = 'docker.elastic.co'
+    DOCKER_IMAGE = "${env.DOCKER_REGISTRY}/observability-ci/apm-server"
   }
   options {
     timeout(time: 2, unit: 'HOURS')
@@ -26,11 +29,12 @@ pipeline {
     quietPeriod(10)
   }
   triggers {
-    issueCommentTrigger('(?i).*(?:jenkins\\W+)?run\\W+(?:the\\W+)?tests(?:\\W+please)?.*')
+    issueCommentTrigger('(?i).*(?:jenkins\\W+)?run\\W+(?:the\\W+)?(?:hey-apm\\W+)?tests(?:\\W+please)?.*')
   }
   parameters {
     booleanParam(name: 'Run_As_Master_Branch', defaultValue: false, description: 'Allow to run any steps on a PR, some steps normally only run on master branch.')
     booleanParam(name: 'linux_ci', defaultValue: true, description: 'Enable Linux build')
+    booleanParam(name: 'osx_ci', defaultValue: true, description: 'Enable OSX CI')
     booleanParam(name: 'windows_ci', defaultValue: true, description: 'Enable Windows CI')
     booleanParam(name: 'intake_ci', defaultValue: true, description: 'Enable test')
     booleanParam(name: 'test_ci', defaultValue: true, description: 'Enable test')
@@ -41,7 +45,6 @@ pipeline {
     booleanParam(name: 'its_ci', defaultValue: true, description: 'Enable async ITs')
     string(name: 'DIAGNOSTIC_INTERVAL', defaultValue: "0", description: 'Elasticsearch detailed logging every X seconds')
     string(name: 'ES_LOG_LEVEL', defaultValue: "error", description: 'Elasticsearch error level')
-
   }
   stages {
     /**
@@ -64,14 +67,14 @@ pipeline {
           dir("${BASE_DIR}"){
             env.GO_VERSION = readFile(".go-version").trim()
             def regexps =[
-              "^_beats",
+              "^_beats.*",
               "^apm-server.yml",
               "^apm-server.docker.yml",
               "^magefile.go",
-              "^ingest",
-              "^packaging",
-              "^tests/packaging",
-              "^vendor/github.com/elastic/beats"
+              "^ingest.*",
+              "^packaging.*",
+              "^tests/packaging.*",
+              "^vendor/github.com/elastic/beats.*"
             ]
             env.BEATS_UPDATED = isGitRegionMatch(patterns: regexps)
 
@@ -176,6 +179,44 @@ pipeline {
               junit(allowEmptyResults: true,
                 keepLongStdio: true,
                 testResults: "${BASE_DIR}/build/junit-report.xml,${BASE_DIR}/build/TEST-*.xml")
+            }
+          }
+        }
+        /**
+        Build on a mac environment.
+        */
+        stage('OSX build-test') {
+          agent { label 'macosx' }
+          options {
+            skipDefaultCheckout()
+            warnError('OSX execution failed')
+          }
+          when {
+            beforeAgent true
+            allOf {
+              expression { return params.osx_ci }
+              expression { return env.ONLY_DOCS == "false" }
+            }
+          }
+          environment {
+            HOME = "${env.WORKSPACE}"
+          }
+          steps {
+            withGithubNotify(context: 'Build-Test - OSX') {
+              deleteDir()
+              unstash 'source'
+              dir(BASE_DIR){
+                retry(2) { // Retry in case there are any errors to avoid temporary glitches
+                  sleep randomNumber(min: 5, max: 10)
+                  sh(label: 'OSX build', script: '.ci/scripts/build-darwin.sh')
+                  sh(label: 'Run Unit tests', script: '.ci/scripts/test-darwin.sh')
+                }
+              }
+            }
+          }
+          post {
+            always {
+              junit(allowEmptyResults: true, keepLongStdio: true, testResults: "${BASE_DIR}/build/junit-*.xml")
             }
           }
         }
@@ -329,29 +370,86 @@ pipeline {
             }
           }
         }
-        /**
-        updates beats updates the framework part and go parts of beats.
-        Then build and test.
-        Finally archive the results.
-        */
-        /*
-        stage('Update Beats') {
-            agent { label 'linux' }
-
-            steps {
-              ansiColor('xterm') {
+        stage('Hey-Apm') {
+          agent { label 'linux && immutable' }
+          options { skipDefaultCheckout() }
+          when {
+            beforeAgent true
+            expression { return env.GITHUB_COMMENT?.contains('hey-apm tests') }
+          }
+          steps {
+            withGithubNotify(context: 'Hey-Apm') {
+              deleteDir()
+              unstash 'source'
+              golang(){
+                dockerLogin(secret: env.DOCKER_SECRET, registry: env.DOCKER_REGISTRY)
+                dir("${BASE_DIR}"){
+                  sh(label: 'Package & Push', script: "./script/jenkins/package-docker-snapshot.sh ${env.GIT_BASE_COMMIT} ${env.DOCKER_IMAGE}")
+                }
+              }
+              build(job: 'apm-server/apm-hey-test-benchmark', propagate: true, wait: true,
+                    parameters: [string(name: 'GO_VERSION', value: '1.12.1'),
+                                 string(name: 'STACK_VERSION', value: "${env.GIT_BASE_COMMIT}"),
+                                 string(name: 'APM_DOCKER_IMAGE', value: "${env.DOCKER_IMAGE}")])
+            }
+          }
+        }
+        stage('Package') {
+          agent { label 'linux && immutable' }
+          options { skipDefaultCheckout() }
+          environment {
+            PATH = "${env.PATH}:${env.WORKSPACE}/bin"
+            HOME = "${env.WORKSPACE}"
+            GOPATH = "${env.WORKSPACE}"
+            SNAPSHOT = "true"
+          }
+          when {
+            beforeAgent true
+            allOf {
+              expression { return params.release_ci }
+              expression { return env.ONLY_DOCS == "false" }
+            }
+          }
+          stages {
+            stage('Package') {
+              steps {
+                withGithubNotify(context: 'Package') {
                   deleteDir()
-                  dir("${BASE_DIR}"){
-                    unstash 'source'
-                    sh """
-                    #!
-                    ./script/jenkins/update-beats.sh
-                    """
-                    archiveArtifacts allowEmptyArchive: true, artifacts: "${BASE_DIR}/build", onlyIfSuccessful: false
+                  unstash 'source'
+                  golang(){
+                    dir("${BASE_DIR}"){
+                      sh(label: 'Build packages', script: './script/jenkins/package.sh')
+                      sh(label: 'Test packages install', script: './script/jenkins/test-install-packages.sh')
+                      dockerLogin(secret: env.DOCKER_SECRET, registry: env.DOCKER_REGISTRY)
+                      sh(label: 'Package & Push', script: "./script/jenkins/package-docker-snapshot.sh ${env.GIT_BASE_COMMIT} ${env.DOCKER_IMAGE}")
+                    }
                   }
                 }
               }
-        }*/
+            }
+            stage('Publish') {
+              when {
+                beforeAgent true
+                anyOf {
+                  branch 'master'
+                  branch pattern: '\\d+\\.\\d+', comparator: 'REGEXP'
+                  branch pattern: 'v\\d?', comparator: 'REGEXP'
+                  tag pattern: 'v\\d+\\.\\d+\\.\\d+.*', comparator: 'REGEXP'
+                  expression { return params.Run_As_Master_Branch }
+                  expression { return env.BEATS_UPDATED != "false" }
+                }
+              }
+              steps {
+                googleStorageUpload(bucket: "gs://${JOB_GCS_BUCKET}/snapshots",
+                  credentialsId: "${JOB_GCS_CREDENTIALS}",
+                  pathPrefix: "${BASE_DIR}/build/distributions/",
+                  pattern: "${BASE_DIR}/build/distributions/**/*",
+                  sharedPublicly: true,
+                  showInline: true)
+              }
+            }
+          }
+        }
       }
     }
     stage('APM Integration Tests') {
@@ -360,7 +458,7 @@ pipeline {
         beforeAgent true
         allOf {
           anyOf {
-            environment name: 'GIT_BUILD_CAUSE', value: 'pr'
+            changeRequest()
             expression { return !params.Run_As_Master_Branch }
           }
           expression { return params.its_ci }
@@ -368,67 +466,13 @@ pipeline {
         }
       }
       steps {
-        log(level: 'INFO', text: "Launching Async ${env.GITHUB_CHECK_ITS_NAME}")
         build(job: env.ITS_PIPELINE, propagate: false, wait: false,
-              parameters: [string(name: 'AGENT_INTEGRATION_TEST', value: 'All'),
+              parameters: [string(name: 'INTEGRATION_TEST', value: 'All'),
                            string(name: 'BUILD_OPTS', value: "--apm-server-build https://github.com/elastic/${env.REPO}@${env.GIT_BASE_COMMIT}"),
                            string(name: 'GITHUB_CHECK_NAME', value: env.GITHUB_CHECK_ITS_NAME),
                            string(name: 'GITHUB_CHECK_REPO', value: env.REPO),
                            string(name: 'GITHUB_CHECK_SHA1', value: env.GIT_BASE_COMMIT)])
         githubNotify(context: "${env.GITHUB_CHECK_ITS_NAME}", description: "${env.GITHUB_CHECK_ITS_NAME} ...", status: 'PENDING', targetUrl: "${env.JENKINS_URL}search/?q=${env.ITS_PIPELINE.replaceAll('/','+')}")
-      }
-    }
-    /**
-      build release packages.
-    */
-    stage('Release') {
-      options { skipDefaultCheckout() }
-      environment {
-        PATH = "${env.PATH}:${env.WORKSPACE}/bin"
-        HOME = "${env.WORKSPACE}"
-        GOPATH = "${env.WORKSPACE}"
-        SNAPSHOT="true"
-      }
-      when {
-        beforeAgent true
-        allOf {
-          anyOf {
-            branch 'master'
-            branch pattern: '\\d+\\.\\d+', comparator: 'REGEXP'
-            branch pattern: 'v\\d?', comparator: 'REGEXP'
-            tag pattern: 'v\\d+\\.\\d+\\.\\d+.*', comparator: 'REGEXP'
-            expression { return params.Run_As_Master_Branch }
-            expression { return env.BEATS_UPDATED != "false" }
-          }
-          expression { return params.release_ci }
-          expression { return env.ONLY_DOCS == "false" }
-        }
-      }
-      steps {
-        withGithubNotify(context: 'Release') {
-          deleteDir()
-          unstash 'source'
-          /**
-            The package build needs mage and docker
-          */
-          golang(){
-            dir("${BASE_DIR}"){
-              sh(label: 'Build packages', script: './script/jenkins/package.sh')
-              sh(label: 'Test packages install', script: './script/jenkins/test-install-packages.sh')
-            }
-          }
-        }
-      }
-      post {
-        success {
-          echo "Archive packages"
-          googleStorageUpload(bucket: "gs://${JOB_GCS_BUCKET}/snapshots",
-            credentialsId: "${JOB_GCS_CREDENTIALS}",
-            pathPrefix: "${BASE_DIR}/build/distributions/",
-            pattern: "${BASE_DIR}/build/distributions/**/*",
-            sharedPublicly: true,
-            showInline: true)
-        }
       }
     }
   }
@@ -440,7 +484,11 @@ pipeline {
 }
 
 def golang(Closure body){
-  def golangDocker = docker.build("golang-mage", "--build-arg GO_VERSION=${GO_VERSION} ${BASE_DIR}/.ci/docker/golang-mage")
+  def golangDocker
+  retry(3) { // Retry in case there are any errors when building the docker images (to avoid temporary glitches)
+    sleep randomNumber(min: 2, max: 5)
+    golangDocker = docker.build('golang-mage', "--build-arg GO_VERSION=${GO_VERSION} -f  ${BASE_DIR}/.ci/docker/golang-mage/Dockerfile ${BASE_DIR}")
+  }
   withEnv(["HOME=${WORKSPACE}", "GOPATH=${WORKSPACE}", "SHELL=/bin/bash"]) {
      golangDocker.inside('-v /usr/bin/docker:/usr/bin/docker -v /var/run/docker.sock:/var/run/docker.sock'){
        body()

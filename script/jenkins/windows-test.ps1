@@ -27,12 +27,19 @@ $env:PATH = "$env:GOPATH\bin;C:\tools\mingw64\bin;$env:PATH"
 # each run starts from a clean slate.
 $env:MAGEFILE_CACHE = "$env:WORKSPACE\.magefile"
 
+# Setup Python.
+choco install python -y -r --no-progress --version 3.8.1.20200110
+refreshenv
+$env:PATH = "C:\Python38;C:\Python38\Scripts;$env:PATH"
+$env:PYTHON_ENV = "$env:TEMP\python-env"
+python --version
+
 # Configure testing parameters.
 $env:TEST_COVERAGE = "true"
 $env:RACE_DETECTOR = "true"
 
-# Install mage from vendor.
-exec { go install github.com/elastic/apm-server/vendor/github.com/magefile/mage }
+# Install mage.
+exec { go install github.com/magefile/mage }
 
 echo "Fetching testing dependencies"
 # TODO (elastic/beats#5050): Use a vendored copy of this.
@@ -57,5 +64,6 @@ echo "System testing $env:beat"
 $packages = $(go list ./... | select-string -Pattern "/vendor/" -NotMatch | select-string -Pattern "/scripts/cmd/" -NotMatch)
 $packages = ($packages|group|Select -ExpandProperty Name) -join ","
 exec { go test -race -c -cover -covermode=atomic -coverpkg $packages } "go test FAILURE"
-Set-Location -Path tests/system
-exec { nosetests --with-timer --with-xunit --xunit-file=../../build/TEST-system.xml } "System test FAILURE"
+
+echo "Running python tests"
+exec { mage pythonUnitTest } "System test FAILURE"

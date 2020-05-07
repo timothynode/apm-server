@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 from __future__ import print_function
 
@@ -110,14 +110,22 @@ def get_kibana_commit(branch):
         - `index_pattern.json` must be found in HEAD (so in case of being amended, it needs to be force-pushed)
         - returns the last PR open against a given branch, which might be wrong if there are several updated at a time.
     """
+    # TODO(axw) outsource to PyGitHub
     rsp = requests.get("https://api.github.com/repos/elastic/kibana/pulls")
-    if rsp.status_code == 200:
+    while rsp.status_code == 200:
         for pr in rsp.json():
             matches_branch = pr['base']['ref'] == branch
             matches_index_pattern_update = all(
                 token in pr['title'].lower() for token in ['apm', 'update', 'index pattern'])
             if matches_branch and matches_index_pattern_update:
                 return pr['head']['sha']
+        # Parse "next" link
+        links = requests.utils.parse_header_links(rsp.headers['link'])
+        links = dict((link['rel'], link['url']) for link in links)
+        next_url = links.get('next', None)
+        if next_url is None:
+            break
+        rsp = requests.get(next_url)
     return None
 
 
@@ -136,7 +144,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--branch', default='master')
     parser.add_argument('-I', '--index-pattern',
-                        default='src/legacy/core_plugins/kibana/server/tutorials/apm/index_pattern.json',
+                        default='x-pack/plugins/apm/server/tutorial/index_pattern.json',
                         help='index-pattern file path')
     parser.add_argument('-P', '--repo-path',
                         default='https://raw.githubusercontent.com/elastic/kibana/',

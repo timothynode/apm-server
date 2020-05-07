@@ -4,12 +4,27 @@ apm-server:
   host: "localhost:8200"
   secret_token: {{ secret_token }}
 
+  {% if jaeger_http_enabled %}
+  jaeger.http.enabled: {{ jaeger_http_enabled }}
+  jaeger.http.host: {{ jaeger_http_host }}
+  {% endif %}
+  {% if jaeger_grpc_enabled %}
+  jaeger.grpc.enabled: {{ jaeger_grpc_enabled }}
+  jaeger.grpc.host: {{ jaeger_grpc_host }}
+  {% endif %}
+  {% if jaeger_grpc_auth_tag %}
+  jaeger.grpc.auth_tag: {{ jaeger_grpc_auth_tag }}
+  {% endif %}
+  {% if jaeger_grpc_sampling_enabled %}
+  jaeger.grpc.sampling.enabled: {{ jaeger_grpc_sampling_enabled }}
+  {% endif %}
+
   {% if api_key_enabled %}
   api_key.enabled: {{ api_key_enabled }}
-  api_key.limit: {{ api_key_limit | default(100) }}
   {% endif %}
+  api_key.limit: {{ api_key_limit | default(100) }}
   {% if api_key_es %}
-  api_key.elasticsearch.hosts: [{{ api_key_es}}]
+  api_key.elasticsearch.hosts: [{{ api_key_es }}]
   {% endif %}
 
   {% if max_event_size %}
@@ -67,6 +82,19 @@ apm-server:
   rum.source_mapping.index_pattern: {{ smap_index_pattern}}
   {% endif %}
 
+  {% if smap_es_host %}
+  rum.source_mapping.elasticsearch.hosts: [{{ smap_es_host }}]
+  {% endif %}
+  {% if smap_es_username %}
+  rum.source_mapping.elasticsearch.username: {{ smap_es_username }}
+  {% endif %}
+  {% if smap_es_password %}
+  rum.source_mapping.elasticsearch.password: {{ smap_es_password }}
+  {% endif %}
+  {% if smap_es_apikey %}
+  rum.source_mapping.elasticsearch.api_key: {{ smap_es_apikey }}
+  {% endif %}
+
   {% if expvar_enabled %}
   expvar.enabled: {{ expvar_enabled }}
   {% endif %}
@@ -84,6 +112,15 @@ apm-server:
   {% if instrumentation_enabled %}
   instrumentation.enabled: {{ instrumentation_enabled }}
   {% endif %}
+  {% if instrumentation_host %}
+  instrumentation.hosts: [{{ instrumentation_host }}]
+  {% endif %}
+  {% if instrumentation_api_key %}
+  instrumentation.api_key: {{ instrumentation_api_key }}
+  {% endif %}
+  {% if instrumentation_secret_token %}
+  instrumentation.secret_token: {{ instrumentation_secret_token }}
+  {% endif %}
   {% if profiling_cpu_enabled %}
   instrumentation.profiling.cpu.enabled: {{ profiling_cpu_enabled }}
   {% endif %}
@@ -100,6 +137,16 @@ apm-server:
   instrumentation.profiling.heap.interval: {{ profiling_heap_interval }}
   {% endif %}
 
+  {% if aggregation_enabled %}
+  aggregation.enabled: {{ aggregation_enabled }}
+  {% endif %}
+  {% if aggregation_interval %}
+  aggregation.interval: {{ aggregation_interval }}
+  {% endif %}
+
+  sampling:
+    keep_unsampled: {{ sampling_keep_unsampled }}
+
   {% if mode %}
   mode: {{ mode }}
   {% endif %}
@@ -108,15 +155,19 @@ apm-server:
   ilm.enabled: {{ ilm_enabled }}
   {% endif %}
 
+  {% if ilm_setup_enabled %}
+  ilm.setup.enabled: {{ ilm_setup_enabled }}
+  {% endif %}
+
   {% if ilm_policies %}
   ilm.setup.mapping:
     - event_type: "error"
-      policy_name: "rollover-10-days"
+      policy_name: "apm-rollover-10-days"
     - event_type: "span"
       policy_name: "apm-rollover-30-days"
 
   ilm.setup.policies:
-    - name: "rollover-10-days"
+    - name: "apm-rollover-10-days"
       policy:
         phases:
           hot:
@@ -152,14 +203,15 @@ apm-server:
 ############################# Setup ##########################################
 
 {% if override_template %}
-
 setup.template.name: {{ override_template }}
 setup.template.pattern: {{ override_template }}*
+{% endif %}
+
+{% if not default_setup_template_settings %}
 setup.template.settings:
   index.number_of_shards: 1
   index.number_of_replicas: 0
-  index.refresh_interval: 1ms
-
+  index.refresh_interval: 250ms
 {% endif %}
 
 ############################# Output ##########################################
@@ -185,6 +237,8 @@ output.file:
 {% if elasticsearch_host %}
 output.elasticsearch:
   hosts: ["{{ elasticsearch_host }}"]
+  username: {{ elasticsearch_username }}
+  password: {{ elasticsearch_password }}
 
   {% if override_index %}
   index: {{ override_index }}
@@ -257,3 +311,15 @@ logging:
     #keepfiles: 7
 
 queue.mem.flush.min_events: {{ queue_flush }}
+
+############################# X-pack Monitoring ###############################
+
+{% if monitoring_enabled %}
+monitoring.enabled: true
+{% if monitoring_elasticsearch_username %}
+monitoring.elasticsearch.username: {{ monitoring_elasticsearch_username  }}
+{% endif %}
+{% if monitoring_elasticsearch_password %}
+monitoring.elasticsearch.password: {{ monitoring_elasticsearch_password }}
+{% endif %}
+{% endif %}

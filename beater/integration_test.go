@@ -32,10 +32,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/elastic/beats/libbeat/beat"
-	"github.com/elastic/beats/libbeat/common"
-	jsonoutput "github.com/elastic/beats/libbeat/outputs/codec/json"
-	"github.com/elastic/beats/libbeat/version"
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/common"
+	jsonoutput "github.com/elastic/beats/v7/libbeat/outputs/codec/json"
+	"github.com/elastic/beats/v7/libbeat/version"
 
 	"github.com/elastic/apm-server/beater/api"
 	"github.com/elastic/apm-server/tests/approvals"
@@ -67,15 +67,17 @@ func adjustMissingTimestamp(event *beat.Event) {
 	}
 }
 
-func testPublishIntake(t *testing.T, apm *beater, events <-chan beat.Event, payload io.Reader) []byte {
-	baseURL, client := apm.client(false)
-	req, err := http.NewRequest(http.MethodPost, baseURL+api.IntakePath, payload)
+// testPublishIntake exercises the publishing pipeline, from apm-server intake to beat publishing.
+// It posts a payload to a running APM server via the intake API and gathers the resulting documents that would
+// normally be published to Elasticsearch.
+func testPublishIntake(t *testing.T, apm *testBeater, events <-chan beat.Event, payload io.Reader) []byte {
+	req, err := http.NewRequest(http.MethodPost, apm.baseURL+api.IntakePath, payload)
 	require.NoError(t, err)
 	req.Header.Add("Content-Type", "application/x-ndjson")
-	return testPublish(t, client, req, events)
+	return testPublish(t, apm.client, req, events)
 }
 
-func testPublishProfile(t *testing.T, apm *beater, events <-chan beat.Event, metadata, profile io.Reader) []byte {
+func testPublishProfile(t *testing.T, apm *testBeater, events <-chan beat.Event, metadata, profile io.Reader) []byte {
 	var buf bytes.Buffer
 	mpw := multipart.NewWriter(&buf)
 	writePart := func(name, contentType string, body io.Reader) {
@@ -94,11 +96,10 @@ func testPublishProfile(t *testing.T, apm *beater, events <-chan beat.Event, met
 	err := mpw.Close()
 	require.NoError(t, err)
 
-	baseURL, client := apm.client(false)
-	req, err := http.NewRequest(http.MethodPost, baseURL+api.ProfilePath, &buf)
+	req, err := http.NewRequest(http.MethodPost, apm.baseURL+api.ProfilePath, &buf)
 	require.NoError(t, err)
 	req.Header.Add("Content-Type", mpw.FormDataContentType())
-	return testPublish(t, client, req, events)
+	return testPublish(t, apm.client, req, events)
 }
 
 // testPublish exercises the publishing pipeline, from apm-server intake to beat publishing.
@@ -154,9 +155,9 @@ func TestPublishIntegration(t *testing.T) {
 			// fresh APM Server for each run
 			events := make(chan beat.Event)
 			defer close(events)
-			apm, teardown, err := setupServer(t, nil, nil, events)
+			apm, err := setupServer(t, nil, nil, events)
 			require.NoError(t, err)
-			defer teardown()
+			defer apm.Stop()
 
 			b, err := loader.LoadDataAsBytes(filepath.Join("../testdata/intake-v2/", tc.payload))
 			require.NoError(t, err)
@@ -173,9 +174,9 @@ func TestPublishIntegrationOnboarding(t *testing.T) {
 
 	events := make(chan beat.Event)
 	defer close(events)
-	_, teardown, err := setupServer(t, nil, nil, events)
+	apm, err := setupServer(t, nil, nil, events)
 	require.NoError(t, err)
-	defer teardown()
+	defer apm.Stop()
 
 	allEvents := collectEvents(events, time.Second)
 	require.Equal(t, 1, len(allEvents))
@@ -207,9 +208,9 @@ func TestPublishIntegrationProfile(t *testing.T) {
 			// fresh APM Server for each run
 			events := make(chan beat.Event)
 			defer close(events)
-			apm, teardown, err := setupServer(t, nil, nil, events)
+			apm, err := setupServer(t, nil, nil, events)
 			require.NoError(t, err)
-			defer teardown()
+			defer apm.Stop()
 
 			var metadata io.Reader
 			if tc.metadata != "" {

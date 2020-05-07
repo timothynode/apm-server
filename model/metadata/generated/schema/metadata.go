@@ -18,13 +18,13 @@
 package schema
 
 const ModelSchema = `{
-    "$id": "doc/spec/metadata.json",
+    "$id": "docs/spec/metadata.json",
     "title": "Metadata",
     "description": "Metadata concerning the other objects in the stream.",
     "type": ["object"],
     "properties": {
         "service": {
-                "$id": "doc/spec/service.json",
+                "$id": "docs/spec/service.json",
     "title": "Service",
     "type": ["object", "null"],
     "properties": {
@@ -132,7 +132,7 @@ const ModelSchema = `{
             "properties.language.properties.name.type": "string"
         },
         "process": {
-              "$id": "doc/spec/process.json",
+              "$id": "docs/spec/process.json",
   "title": "Process",
   "type": ["object", "null"],
   "properties": {
@@ -160,7 +160,7 @@ const ModelSchema = `{
   "required": ["pid"]
         },
         "system": {
-                "$id": "doc/spec/system.json",
+                "$id": "docs/spec/system.json",
     "title": "System",
     "type": ["object", "null"],
     "properties": {
@@ -256,8 +256,82 @@ const ModelSchema = `{
         }
     }
         },
+	"cloud": {
+                "$id": "docs/spec/cloud.json",
+    "title": "Cloud",
+    "type": ["object", "null"],
+    "properties": {
+        "account": {
+            "properties": {
+                "id" : {
+                    "description": "Cloud account ID",
+                    "type": ["string"],
+                    "maxLength": 1024
+                },
+                "name" : {
+                    "description": "Cloud account name",
+                    "type": ["string"],
+                    "maxLength": 1024
+                }
+            }
+        },
+        "availability_zone": {
+            "description": "Cloud availability zone name. e.g. us-east-1a",
+            "type": ["string", "null"],
+            "maxLength": 1024
+        },
+        "instance": {
+            "properties": {
+                "id" : {
+                    "description": "Cloud instance/machine ID",
+                    "type": ["string"],
+                    "maxLength": 1024
+                },
+                "name" : {
+                    "description": "Cloud instance/machine name",
+                    "type": ["string"],
+                    "maxLength": 1024
+                }
+            }
+        },
+        "machine": {
+            "properties": {
+                "type" : {
+                    "description": "Cloud instance/machine type",
+                    "type": ["string"],
+                    "maxLength": 1024
+                }
+            }
+        },
+        "project": {
+            "properties": {
+                "id" : {
+                    "description": "Cloud project ID",
+                    "type": ["string"],
+                    "maxLength": 1024
+                },
+                "name" : {
+                    "description": "Cloud project name",
+                    "type": ["string"],
+                    "maxLength": 1024
+                }
+            }
+        },
+        "provider": {
+            "description": "Cloud provider name. e.g. aws, azure, gcp, digitalocean.",
+            "type": ["string", "null"],
+            "maxLength": 1024
+        },
+        "region": {
+            "description": "Cloud region name. e.g. us-east-1",
+            "type": ["string", "null"],
+            "maxLength": 1024
+        }
+    },
+    "required": ["provider"]
+	},
         "labels": {
-                "$id": "doc/spec/tags.json",
+                "$id": "docs/spec/tags.json",
     "title": "Tags",
     "type": ["object", "null"],
     "description": "A flat mapping of user-defined tags with string, boolean or number values.",

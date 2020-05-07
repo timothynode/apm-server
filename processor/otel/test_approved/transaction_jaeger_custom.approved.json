@@ -1,0 +1,34 @@
+{
+    "events": [
+        {
+            "@timestamp": "0001-01-01T00:00:00Z",
+            "agent": {
+                "name": "Jaeger",
+                "version": "unknown"
+            },
+            "labels": {
+                "a_b": "foo"
+            },
+            "processor": {
+                "event": "transaction",
+                "name": "transaction"
+            },
+            "service": {
+                "language": {
+                    "name": "unknown"
+                },
+                "name": "unknown"
+            },
+            "transaction": {
+                "duration": {
+                    "us": 0
+                },
+                "id": "",
+                "name": "",
+                "result": "Success",
+                "sampled": true,
+                "type": "custom"
+            }
+        }
+    ]
+}

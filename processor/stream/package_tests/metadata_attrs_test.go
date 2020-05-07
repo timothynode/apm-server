@@ -18,19 +18,16 @@
 package package_tests
 
 import (
-	"bufio"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/elastic/apm-server/decoder"
-	"github.com/elastic/apm-server/tests/loader"
-
-	"github.com/elastic/apm-server/model/metadata"
 	"github.com/elastic/apm-server/model/metadata/generated/schema"
+	"github.com/elastic/apm-server/model/modeldecoder"
 	"github.com/elastic/apm-server/processor/stream"
 	"github.com/elastic/apm-server/tests"
-	"github.com/elastic/apm-server/validation"
+	"github.com/elastic/apm-server/tests/loader"
 )
 
 type MetadataProcessor struct {
@@ -56,7 +53,7 @@ func (p *MetadataProcessor) Validate(data interface{}) error {
 		}
 
 		// validate the metadata object against our jsonschema
-		err := validation.Validate(rawMetadata, metadata.ModelSchema())
+		_, err := modeldecoder.DecodeMetadata(rawMetadata, false)
 		if err != nil {
 			return err
 		}
@@ -85,15 +82,14 @@ func getMetadataEventAttrs(t *testing.T, prefix string) *tests.Set {
 	payloadStream, err := loader.LoadDataAsStream("../testdata/intake-v2/only-metadata.ndjson")
 	require.NoError(t, err)
 
-	lr := decoder.NewLineReader(bufio.NewReader(payloadStream), lrSize)
-	metadata, err := decoder.NewNDJSONStreamReader(lr).Read()
+	metadata, err := decoder.NewNDJSONStreamReader(payloadStream, lrSize).Read()
 	require.NoError(t, err)
 
 	contextMetadata := metadata["metadata"]
 
 	eventFields := tests.NewSet()
 	tests.FlattenMapStr(contextMetadata, prefix, nil, eventFields)
-	t.Logf("Event fields: %s", eventFields)
+	t.Logf("Event field: %s", eventFields)
 	return eventFields
 }
 
@@ -119,6 +115,7 @@ func TestMetadataPayloadAttrsMatchFields(t *testing.T) {
 		{Template: "process.argv", Mapping: "process.args"},
 		{Template: "labels.*", Mapping: "labels"},
 		{Template: "service.node.configured_name", Mapping: "service.node.name"},
+		{Template: "cloud", Mapping: "cloud"},
 	}
 	setup.EventFieldsMappedToTemplateFields(t, eventFields, mappingFields)
 }

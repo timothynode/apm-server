@@ -1,0 +1,73 @@
+{
+    "events": [
+        {
+            "@timestamp": "2018-08-01T10:00:00Z",
+            "agent": {
+                "name": "js-base",
+                "version": "4.8.1"
+            },
+            "error": {
+                "culprit": "test/e2e/general-usecase/app.e2e-bundle.min.js?token=secret",
+                "custom": {
+                    "testContext": "testContext"
+                },
+                "exception": [
+                    {
+                        "message": "Uncaught Error: timeout test e with a [REDACTED]",
+                        "stacktrace": [
+                            {
+                                "abs_path": "http://localhost:8000/test/e2e/general-usecase/app.e2e-bundle.min.js?token=secret",
+                                "exclude_from_grouping": false,
+                                "filename": "test/e2e/general-usecase/app.e2e-bundle.min.js?token=secret",
+                                "function": "generateError",
+                                "line": {
+                                    "column": 9,
+                                    "number": 7662
+                                }
+                            },
+                            {
+                                "abs_path": "http://localhost:8000/test/e2e/general-usecase/app.e2e-bundle.min.js?token=secret",
+                                "exclude_from_grouping": false,
+                                "filename": "test/e2e/general-usecase/app.e2e-bundle.min.js?token=secret",
+                                "function": "\u003canonymous\u003e",
+                                "line": {
+                                    "column": 3,
+                                    "number": 7666
+                                }
+                            }
+                        ],
+                        "type": "Error"
+                    }
+                ],
+                "grouping_key": "e5fa86c0df837d142aa0520eb2661d8d",
+                "id": "3661352868c17c78b773d2f1beae6d41",
+                "page": {
+                    "referer": "http://localhost:8000/test/e2e/",
+                    "url": "http://localhost:8000/test/e2e/general-usecase/"
+                }
+            },
+            "labels": {
+                "testTagKey": "testTagValue"
+            },
+            "processor": {
+                "event": "error",
+                "name": "error"
+            },
+            "service": {
+                "language": {
+                    "name": "javascript"
+                },
+                "name": "apm-a-rum-test-e2e-general-usecase",
+                "version": "0.0.1"
+            },
+            "timestamp": {
+                "us": 1533117600000000
+            },
+            "user": {
+                "email": "em",
+                "id": "uId",
+                "name": "un"
+            }
+        }
+    ]
+}

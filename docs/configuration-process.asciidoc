@@ -6,7 +6,7 @@ Example config file:
 ["source","yaml"]
 ----
 apm-server:
-  hosts: ["localhost:8200"]
+  host: "localhost:8200"
   rum:
     enabled: true
 
@@ -134,7 +134,7 @@ Defaults to true.
 [float]
 ==== `register.ingest.pipeline.overwrite`
 Overwrites the existing APM pipeline definition in Elasticsearch.
-Defaults to true.
+Defaults to false.
 
 [float]
 === Configuration options: `queue.mem.*`

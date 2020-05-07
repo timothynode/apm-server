@@ -19,94 +19,106 @@ package beater
 
 import (
 	"context"
-	"net"
 	"net/http"
 
 	"go.elastic.co/apm"
-	"go.elastic.co/apm/module/apmhttp"
-	"golang.org/x/net/netutil"
+	"golang.org/x/sync/errgroup"
 
-	"github.com/elastic/apm-server/beater/api"
+	"github.com/elastic/beats/v7/libbeat/logp"
+	"github.com/elastic/beats/v7/libbeat/version"
+
 	"github.com/elastic/apm-server/beater/config"
+	"github.com/elastic/apm-server/beater/jaeger"
 	"github.com/elastic/apm-server/publish"
-	"github.com/elastic/beats/libbeat/common/transport/tlscommon"
-	"github.com/elastic/beats/libbeat/logp"
-	"github.com/elastic/beats/libbeat/version"
 )
 
-func newServer(cfg *config.Config, tracer *apm.Tracer, report publish.Reporter) (*http.Server, error) {
-	mux, err := api.NewMux(cfg, report)
+// RunServerFunc is a function which runs the APM Server until a
+// fatal error occurs, or the context is cancelled.
+type RunServerFunc func(context.Context, ServerParams) error
+
+// ServerParams holds parameters for running the APM Server.
+type ServerParams struct {
+	// Config is the configuration used for running the APM Server.
+	Config *config.Config
+
+	// Logger is the logger for the beater component.
+	Logger *logp.Logger
+
+	// Tracer is an apm.Tracer that the APM Server may use
+	// for self-instrumentation.
+	Tracer *apm.Tracer
+
+	// Reporter is the publish.Reporter that the APM Server
+	// should use for reporting events.
+	Reporter publish.Reporter
+}
+
+// RunServer runs the APM Server until a fatal error occurs, or ctx is cancelled.
+func RunServer(ctx context.Context, args ServerParams) error {
+	srv, err := newServer(args.Logger, args.Config, args.Tracer, args.Reporter)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	server := &http.Server{
-		Addr: cfg.Host,
-		Handler: apmhttp.Wrap(mux,
-			apmhttp.WithServerRequestIgnorer(doNotTrace),
-			apmhttp.WithTracer(tracer),
-		),
-		IdleTimeout:    cfg.IdleTimeout,
-		ReadTimeout:    cfg.ReadTimeout,
-		WriteTimeout:   cfg.WriteTimeout,
-		MaxHeaderBytes: cfg.MaxHeaderSize,
-	}
-
-	if cfg.TLS.IsEnabled() {
-		tlsServerConfig, err := tlscommon.LoadTLSServerConfig(cfg.TLS)
-		if err != nil {
-			return nil, err
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			srv.stop()
+		case <-done:
 		}
-		server.TLSConfig = tlsServerConfig.BuildModuleConfig(cfg.Host)
-	}
-	return server, nil
+	}()
+	return srv.run()
 }
 
-func doNotTrace(req *http.Request) bool {
-	// Don't trace root url (healthcheck) requests.
-	return req.URL.Path == api.RootPath
+type server struct {
+	logger *logp.Logger
+	cfg    *config.Config
+
+	httpServer   *httpServer
+	jaegerServer *jaeger.Server
+	reporter     publish.Reporter
 }
 
-func run(logger *logp.Logger, server *http.Server, lis net.Listener, cfg *config.Config) error {
-	logger.Infof("Starting apm-server [%s built %s]. Hit CTRL-C to stop it.", version.Commit(), version.BuildTime())
-	logger.Infof("Listening on: %s", server.Addr)
-	switch cfg.RumConfig.IsEnabled() {
-	case true:
-		logger.Info("RUM endpoints enabled!")
-		for _, s := range cfg.RumConfig.AllowOrigins {
-			if s == "*" {
-				logger.Warn("CORS related setting `apm-server.rum.allow_origins` allows all origins. Consider more restrictive setting for production use.")
-				break
-			}
-		}
-	case false:
-		logger.Info("RUM endpoints disabled.")
-	}
-
-	if cfg.MaxConnections > 0 {
-		lis = netutil.LimitListener(lis, cfg.MaxConnections)
-		logger.Infof("Connection limit set to: %d", cfg.MaxConnections)
-	}
-
-	if server.TLSConfig != nil {
-		logger.Info("SSL enabled.")
-		return server.ServeTLS(lis, "", "")
-	}
-	if cfg.SecretToken != "" {
-		logger.Warn("Secret token is set, but SSL is not enabled.")
-	} else {
-		logger.Info("SSL disabled.")
-	}
-	return server.Serve(lis)
-}
-
-func stop(logger *logp.Logger, server *http.Server) {
-	err := server.Shutdown(context.Background())
+func newServer(logger *logp.Logger, cfg *config.Config, tracer *apm.Tracer, reporter publish.Reporter) (server, error) {
+	httpServer, err := newHTTPServer(logger, cfg, tracer, reporter)
 	if err != nil {
-		logger.Error(err.Error())
-		err = server.Close()
-		if err != nil {
-			logger.Error(err.Error())
-		}
+		return server{}, err
+	}
+	jaegerServer, err := jaeger.NewServer(logger, cfg, tracer, reporter)
+	if err != nil {
+		return server{}, err
+	}
+	return server{
+		logger:       logger,
+		cfg:          cfg,
+		httpServer:   httpServer,
+		jaegerServer: jaegerServer,
+		reporter:     reporter,
+	}, nil
+}
+
+func (s server) run() error {
+	s.logger.Infof("Starting apm-server [%s built %s]. Hit CTRL-C to stop it.", version.Commit(), version.BuildTime())
+	var g errgroup.Group
+	if s.jaegerServer != nil {
+		g.Go(s.jaegerServer.Serve)
+	}
+	if s.httpServer != nil {
+		g.Go(s.httpServer.start)
+	}
+	if err := g.Wait(); err != http.ErrServerClosed {
+		return err
+	}
+	s.logger.Infof("Server stopped")
+	return nil
+}
+
+func (s server) stop() {
+	if s.jaegerServer != nil {
+		s.jaegerServer.Stop()
+	}
+	if s.httpServer != nil {
+		s.httpServer.stop()
 	}
 }
